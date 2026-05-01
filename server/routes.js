@@ -4,14 +4,14 @@ import crypto from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import { openDatabase, setSetting, getSetting, logAudit, ensureSubmission, passwordHash } from "./db.js";
-import { createSession, requireAdmin, requireCandidate, verifyPassword, canAccessCandidate } from "./auth.js";
+import { openDatabase, setSetting, getSetting, logAudit, ensureSubmission, passwordHash, listAuditLogs } from "./db.js";
+import { createSession, requireAdmin, requireCandidate, verifyPassword, canAccessCandidate, getSession } from "./auth.js";
 import { addSocket, broadcast } from "./realtime.js";
 import { adminState, publicState, settingsPayload } from "./state.js";
 import { config, paths, uploadPolicy } from "./config.js";
 import { ensureDir, safeFileName } from "./fs-utils.js";
 import { detectBuffer } from "./media.js";
-import { acceptChunk, confirmSubmission, createUploadSession } from "./upload.js";
+import { acceptChunk, confirmSubmission, confirmSubmissionByAdmin, createUploadSession } from "./upload.js";
 import { exportGlobalManifest } from "./exporter.js";
 
 const fileAccessTokens = new Map();
@@ -26,6 +26,24 @@ export async function registerRoutes(app) {
     { parseAs: "buffer", bodyLimit: uploadPolicy.chunkBytes + 1024 * 1024 },
     (_request, body, done) => done(null, body)
   );
+
+  app.addHook("onResponse", async (request, reply) => {
+    if (!shouldLogRequest(request, reply)) return;
+    const session = getSession(request);
+    const candidateId = session?.candidate_id || request.params?.id || request.headers["x-candidate-id"] || null;
+    const actor = session ? (session.role === "candidate" ? `candidate:${session.candidate_id}` : session.role) : "anonymous";
+    logAudit(
+      actor,
+      "api_request",
+      {
+        route: request.routeOptions?.url || request.url,
+        query: request.query || {},
+        candidateId,
+        elapsedMs: Math.round(reply.elapsedTime || 0)
+      },
+      requestAuditMetadata(request, reply, session, candidateId)
+    );
+  });
 
   app.get("/ws", { websocket: true }, (socket) => {
     const ws = addSocket(socket);
@@ -45,6 +63,12 @@ export async function registerRoutes(app) {
     const { password, role } = request.body || {};
     const normalizedRole = role === "readonly" ? "readonly" : "admin";
     if (!password || !verifyPassword(normalizedRole, password)) {
+      logAudit(
+        "anonymous",
+        "login_failed",
+        { role: normalizedRole },
+        requestAuditMetadata(request, reply, null, null, "warning")
+      );
       reply.code(401);
       return { ok: false, error: "รหัสผ่านไม่ถูกต้อง" };
     }
@@ -61,6 +85,23 @@ export async function registerRoutes(app) {
   app.get("/api/admin/settings", async (request, reply) => {
     requireAdmin(request, reply, true);
     return settingsPayload();
+  });
+
+  app.get("/api/admin/audit-logs", async (request, reply) => {
+    requireAdmin(request, reply, true);
+    const logs = listAuditLogs({
+      q: stringQuery(request.query?.q),
+      actor: stringQuery(request.query?.actor),
+      action: stringQuery(request.query?.action),
+      level: stringQuery(request.query?.level),
+      candidateId: stringQuery(request.query?.candidateId),
+      method: stringQuery(request.query?.method),
+      statusCode: stringQuery(request.query?.statusCode),
+      from: stringQuery(request.query?.from),
+      to: stringQuery(request.query?.to),
+      limit: Number(request.query?.limit || 100)
+    });
+    return { ok: true, logs };
   });
 
   app.post("/api/admin/settings", async (request, reply) => {
@@ -183,7 +224,7 @@ export async function registerRoutes(app) {
     ensureSubmission(candidateId);
     openDatabase()
       .prepare(
-        "UPDATE submissions SET status='admin_unlocked', active_upload_id=NULL, progress=0, error_message=NULL, updated_at=? WHERE candidate_id=?"
+        "UPDATE submissions SET status='admin_unlocked', active_upload_id=NULL, progress=0, candidate_confirmed_at=NULL, admin_confirmed_at=NULL, confirmed_at=NULL, error_message=NULL, updated_at=? WHERE candidate_id=?"
       )
       .run(new Date().toISOString(), candidateId);
     logAudit("admin", "candidate_unlocked", { candidateId, reason });
@@ -194,6 +235,21 @@ export async function registerRoutes(app) {
   app.get("/api/admin/candidates/:id", async (request, reply) => {
     requireAdmin(request, reply, true);
     return candidatePayload(request.params.id, true);
+  });
+
+  app.post("/api/admin/candidates/:id/confirm", async (request, reply) => {
+    requireAdmin(request, reply);
+    try {
+      const submission = confirmSubmissionByAdmin(request.params.id);
+      logAudit("admin", "submission_admin_confirmed", {
+        candidateId: request.params.id,
+        adminConfirmedAt: submission.admin_confirmed_at
+      });
+      return { ok: true, submission };
+    } catch (error) {
+      reply.code(400);
+      return { ok: false, error: error.message };
+    }
   });
 
   app.post("/api/admin/export", async (request, reply) => {
@@ -260,7 +316,7 @@ export async function registerRoutes(app) {
     try {
       const submission = confirmSubmission(request.params.id);
       logAudit(`candidate:${request.params.id}`, "submission_confirmed", {
-        confirmationCode: submission.confirmation_code
+        confirmedAt: submission.confirmed_at
       });
       return { ok: true, submission };
     } catch (error) {
@@ -284,6 +340,13 @@ export async function registerRoutes(app) {
       fileName: file.original_name,
       mime: kind === "preview" && file.detected_type?.startsWith("video/") ? "video/mp4" : file.detected_type,
       expiresAt: Date.now() + 30 * 60 * 1000
+    });
+    logAudit(sessionActor(request), "file_link_created", {
+      candidateId: file.candidate_id,
+      fileId: file.id,
+      kind,
+      fileName: file.original_name,
+      mime: file.detected_type
     });
     return { ok: true, url: `/files/access/${token}` };
   });
@@ -314,6 +377,40 @@ export async function registerRoutes(app) {
   }
 }
 
+function shouldLogRequest(request, reply) {
+  if (!request.url.startsWith("/api/")) return false;
+  if (request.url.startsWith("/api/health")) return false;
+  if (request.url.startsWith("/api/admin/audit-logs")) return false;
+  if (reply.statusCode >= 400) return true;
+  if (request.method !== "GET") return true;
+  return request.url.startsWith("/api/admin/candidates/") || request.url.startsWith("/api/file-links/");
+}
+
+function requestAuditMetadata(request, reply, session, candidateId, level) {
+  return {
+    level: level || (reply.statusCode >= 400 ? "warning" : "info"),
+    actorRole: session?.role || null,
+    candidateId: candidateId || null,
+    requestId: request.id,
+    requestMethod: request.method,
+    requestPath: request.url.split("?")[0],
+    statusCode: reply.statusCode,
+    ip: request.ip,
+    userAgent: request.headers["user-agent"] || ""
+  };
+}
+
+function sessionActor(request) {
+  const session = getSession(request);
+  if (!session) return "anonymous";
+  return session.role === "candidate" ? `candidate:${session.candidate_id}` : session.role;
+}
+
+function stringQuery(value) {
+  if (Array.isArray(value)) return String(value[0] || "").trim();
+  return String(value || "").trim();
+}
+
 function streamFile(reply, filePath) {
   return reply.send(fs.createReadStream(filePath));
 }
@@ -324,7 +421,7 @@ async function candidatePayload(candidateId, includeName) {
   const submission = db.prepare("SELECT * FROM submissions WHERE candidate_id=?").get(candidateId);
   const files = db
     .prepare(
-      "SELECT id,category,original_name,detected_type,size,sha256,status,duration_seconds,warning,error_message FROM files WHERE candidate_id=? AND upload_id=COALESCE(?,'') ORDER BY file_index"
+      "SELECT id,category,original_name,detected_type,size,sha256,status,duration_seconds,video_width,video_height,aspect_ratio,warning,error_message FROM files WHERE candidate_id=? AND upload_id=COALESCE(?,'') ORDER BY file_index"
     )
     .all(candidateId, submission?.active_upload_id || "");
   return {
@@ -335,11 +432,12 @@ async function candidatePayload(candidateId, includeName) {
     submission: {
       status: submission?.status || "not_started",
       progress: submission?.progress || 0,
-      confirmationCode: submission?.confirmation_code,
       startedAt: submission?.started_at,
       uploadCompletedAt: submission?.upload_completed_at,
       verifiedAt: submission?.verified_at,
       confirmedAt: submission?.confirmed_at,
+      candidateConfirmedAt: submission?.candidate_confirmed_at,
+      adminConfirmedAt: submission?.admin_confirmed_at,
       errorMessage: submission?.error_message,
       backupStatus: submission?.backup_status
     },
@@ -352,6 +450,9 @@ async function candidatePayload(candidateId, includeName) {
       sha256: file.sha256,
       status: file.status,
       durationSeconds: file.duration_seconds,
+      videoWidth: file.video_width,
+      videoHeight: file.video_height,
+      aspectRatio: file.aspect_ratio,
       warning: file.warning,
       errorMessage: file.error_message
     }))

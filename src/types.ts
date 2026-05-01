@@ -3,6 +3,8 @@ export type SubmissionStatus =
   | "uploading"
   | "verifying"
   | "ready_to_confirm"
+  | "candidate_confirmed"
+  | "admin_confirmed"
   | "confirmed"
   | "needs_resubmit"
   | "expired"
@@ -40,6 +42,8 @@ export interface CandidateSummary {
   progress: number;
   confirmationCode?: string | null;
   confirmedAt?: string | null;
+  candidateConfirmedAt?: string | null;
+  adminConfirmedAt?: string | null;
   errorMessage?: string | null;
   backupStatus?: string;
   backupError?: string | null;
@@ -54,6 +58,9 @@ export interface SubmissionFile {
   sha256?: string | null;
   status: string;
   durationSeconds?: number | null;
+  videoWidth?: number | null;
+  videoHeight?: number | null;
+  aspectRatio?: number | null;
   warning?: string | null;
   errorMessage?: string | null;
 }
@@ -71,6 +78,8 @@ export interface CandidateDetail {
     uploadCompletedAt?: string | null;
     verifiedAt?: string | null;
     confirmedAt?: string | null;
+    candidateConfirmedAt?: string | null;
+    adminConfirmedAt?: string | null;
     errorMessage?: string | null;
     backupStatus?: string | null;
   };
@@ -95,4 +104,34 @@ export interface PublicState {
 
 export interface AdminState extends Omit<PublicState, "systemUrlQr" | "candidates"> {
   candidates: CandidateSummary[];
+}
+
+export interface AuditLogEntry {
+  id: number;
+  actor: string;
+  action: string;
+  level: "info" | "warning" | "error" | string;
+  actorRole?: string | null;
+  candidateId?: string | null;
+  requestId?: string | null;
+  requestMethod?: string | null;
+  requestPath?: string | null;
+  statusCode?: number | null;
+  ip?: string | null;
+  userAgent?: string | null;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AuditLogFilters {
+  q?: string;
+  actor?: string;
+  action?: string;
+  level?: string;
+  candidateId?: string;
+  method?: string;
+  statusCode?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
 }

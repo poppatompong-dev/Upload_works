@@ -6,6 +6,8 @@ export function statusLabel(status: SubmissionStatus) {
     uploading: "กำลังส่ง",
     verifying: "กำลังตรวจไฟล์",
     ready_to_confirm: "รอยืนยัน",
+    candidate_confirmed: "ผู้ส่งรับรองแล้ว",
+    admin_confirmed: "กรรมการรับรองแล้ว",
     confirmed: "ยืนยันแล้ว",
     needs_resubmit: "ต้องส่งใหม่",
     expired: "หมดเวลา",
@@ -16,6 +18,7 @@ export function statusLabel(status: SubmissionStatus) {
 
 export function statusTone(status: SubmissionStatus) {
   if (status === "confirmed") return "ok";
+  if (status === "candidate_confirmed" || status === "admin_confirmed") return "info";
   if (status === "ready_to_confirm" || status === "verifying") return "warn";
   if (status === "needs_resubmit" || status === "expired") return "bad";
   if (status === "uploading") return "info";

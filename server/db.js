@@ -49,6 +49,8 @@ function migrate(database) {
       verifying_at TEXT,
       verified_at TEXT,
       confirmed_at TEXT,
+      candidate_confirmed_at TEXT,
+      admin_confirmed_at TEXT,
       confirmation_code TEXT,
       error_message TEXT,
       backup_status TEXT NOT NULL DEFAULT 'not_started',
@@ -75,6 +77,9 @@ function migrate(database) {
       total_chunks INTEGER NOT NULL,
       received_chunks INTEGER NOT NULL DEFAULT 0,
       duration_seconds REAL,
+      video_width INTEGER,
+      video_height INTEGER,
+      aspect_ratio REAL,
       warning TEXT,
       error_message TEXT,
       created_at TEXT NOT NULL,
@@ -95,6 +100,15 @@ function migrate(database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       actor TEXT NOT NULL,
       action TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      actor_role TEXT,
+      candidate_id TEXT,
+      request_id TEXT,
+      request_method TEXT,
+      request_path TEXT,
+      status_code INTEGER,
+      ip TEXT,
+      user_agent TEXT,
       detail_json TEXT,
       created_at TEXT NOT NULL
     );
@@ -107,12 +121,32 @@ function migrate(database) {
       created_at TEXT NOT NULL
     );
   `);
+  ensureColumn(database, "files", "video_width", "INTEGER");
+  ensureColumn(database, "files", "video_height", "INTEGER");
+  ensureColumn(database, "files", "aspect_ratio", "REAL");
+  ensureColumn(database, "submissions", "candidate_confirmed_at", "TEXT");
+  ensureColumn(database, "submissions", "admin_confirmed_at", "TEXT");
+  ensureColumn(database, "audit_logs", "level", "TEXT NOT NULL DEFAULT 'info'");
+  ensureColumn(database, "audit_logs", "actor_role", "TEXT");
+  ensureColumn(database, "audit_logs", "candidate_id", "TEXT");
+  ensureColumn(database, "audit_logs", "request_id", "TEXT");
+  ensureColumn(database, "audit_logs", "request_method", "TEXT");
+  ensureColumn(database, "audit_logs", "request_path", "TEXT");
+  ensureColumn(database, "audit_logs", "status_code", "INTEGER");
+  ensureColumn(database, "audit_logs", "ip", "TEXT");
+  ensureColumn(database, "audit_logs", "user_agent", "TEXT");
   const now = new Date().toISOString();
   database
     .prepare(
       "INSERT OR IGNORE INTO timer (id,state,duration_seconds,updated_at) VALUES (1,'idle',?,?)"
     )
     .run(config.exam.durationSeconds, now);
+}
+
+function ensureColumn(database, table, column, definition) {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+  if (columns.some((item) => item.name === column)) return;
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 function seedSettings(database) {
@@ -151,10 +185,126 @@ export function setSetting(key, value) {
     .run(key, String(value), new Date().toISOString());
 }
 
-export function logAudit(actor, action, detail = {}) {
+export function logAudit(actor, action, detail = {}, metadata = {}) {
+  const candidateId = metadata.candidateId || detail.candidateId || parseCandidateActor(actor);
   openDatabase()
-    .prepare("INSERT INTO audit_logs (actor,action,detail_json,created_at) VALUES (?,?,?,?)")
-    .run(actor, action, JSON.stringify(detail), new Date().toISOString());
+    .prepare(
+      `INSERT INTO audit_logs
+       (actor,action,level,actor_role,candidate_id,request_id,request_method,request_path,status_code,ip,user_agent,detail_json,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(
+      actor,
+      action,
+      metadata.level || "info",
+      metadata.actorRole || inferActorRole(actor),
+      candidateId || null,
+      metadata.requestId || null,
+      metadata.requestMethod || null,
+      metadata.requestPath || null,
+      Number.isInteger(metadata.statusCode) ? metadata.statusCode : null,
+      metadata.ip || null,
+      metadata.userAgent || null,
+      JSON.stringify(detail || {}),
+      new Date().toISOString()
+    );
+}
+
+export function listAuditLogs(filters = {}) {
+  const where = [];
+  const params = {};
+  const limit = clampInteger(filters.limit, 1, 500, 100);
+
+  if (filters.actor) {
+    where.push("actor LIKE @actor");
+    params.actor = `%${filters.actor}%`;
+  }
+  if (filters.action) {
+    where.push("action LIKE @action");
+    params.action = `%${filters.action}%`;
+  }
+  if (filters.level) {
+    where.push("level = @level");
+    params.level = filters.level;
+  }
+  if (filters.candidateId) {
+    where.push("candidate_id = @candidateId");
+    params.candidateId = filters.candidateId;
+  }
+  if (filters.method) {
+    where.push("request_method = @method");
+    params.method = filters.method;
+  }
+  if (filters.statusCode) {
+    where.push("status_code = @statusCode");
+    params.statusCode = Number(filters.statusCode);
+  }
+  if (filters.from) {
+    where.push("created_at >= @from");
+    params.from = filters.from;
+  }
+  if (filters.to) {
+    where.push("created_at <= @to");
+    params.to = filters.to;
+  }
+  if (filters.q) {
+    where.push("(actor LIKE @q OR action LIKE @q OR detail_json LIKE @q OR request_path LIKE @q OR ip LIKE @q)");
+    params.q = `%${filters.q}%`;
+  }
+
+  const rows = openDatabase()
+    .prepare(
+      `SELECT id, actor, action, level, actor_role, candidate_id, request_id, request_method,
+              request_path, status_code, ip, user_agent, detail_json, created_at
+       FROM audit_logs
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY id DESC
+       LIMIT ${limit}`
+    )
+    .all(params);
+
+  return rows.map((row) => ({
+    id: row.id,
+    actor: row.actor,
+    action: row.action,
+    level: row.level,
+    actorRole: row.actor_role,
+    candidateId: row.candidate_id,
+    requestId: row.request_id,
+    requestMethod: row.request_method,
+    requestPath: row.request_path,
+    statusCode: row.status_code,
+    ip: row.ip,
+    userAgent: row.user_agent,
+    detail: parseDetail(row.detail_json),
+    createdAt: row.created_at
+  }));
+}
+
+function inferActorRole(actor) {
+  if (actor === "system") return "system";
+  if (actor === "admin" || actor === "readonly") return actor;
+  if (String(actor).startsWith("candidate:")) return "candidate";
+  return null;
+}
+
+function parseCandidateActor(actor) {
+  const value = String(actor || "");
+  return value.startsWith("candidate:") ? value.slice("candidate:".length) : null;
+}
+
+function parseDetail(value) {
+  try {
+    return value ? JSON.parse(value) : {};
+  } catch {
+    return {};
+  }
+}
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 export function ensureSubmission(candidateId) {
@@ -171,7 +321,7 @@ export function publicCandidateRows() {
       `SELECT c.id, c.sequence_no, c.applicant_no,
               COALESCE(s.status,'not_started') AS status,
               COALESCE(s.progress,0) AS progress,
-              s.confirmation_code, s.confirmed_at, s.error_message
+              s.confirmation_code, s.confirmed_at, s.candidate_confirmed_at, s.admin_confirmed_at, s.error_message
        FROM candidates c
        LEFT JOIN submissions s ON s.candidate_id = c.id
        ORDER BY c.sequence_no`
@@ -186,7 +336,7 @@ export function adminCandidateRows() {
               COALESCE(s.status,'not_started') AS status,
               COALESCE(s.progress,0) AS progress,
               s.active_upload_id, s.started_at, s.upload_completed_at,
-              s.verifying_at, s.verified_at, s.confirmed_at,
+              s.verifying_at, s.verified_at, s.confirmed_at, s.candidate_confirmed_at, s.admin_confirmed_at,
               s.confirmation_code, s.error_message, s.backup_status, s.backup_error
        FROM candidates c
        LEFT JOIN submissions s ON s.candidate_id = c.id

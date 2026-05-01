@@ -23,7 +23,7 @@ export async function writeCandidateManifest(candidateId) {
       applicantNo: candidate.applicant_no,
       fullName: candidate.full_name
     },
-    submission,
+    submission: submission ? withoutConfirmationCode(submission) : null,
     files: files.map((file) => ({
       id: file.id,
       category: file.category,
@@ -32,6 +32,9 @@ export async function writeCandidateManifest(candidateId) {
       size: file.size,
       sha256: file.sha256,
       durationSeconds: file.duration_seconds,
+      videoWidth: file.video_width,
+      videoHeight: file.video_height,
+      aspectRatio: file.aspect_ratio,
       warning: file.warning,
       status: file.status
     }))
@@ -41,6 +44,11 @@ export async function writeCandidateManifest(candidateId) {
   const manifestPath = path.join(dir, "manifest.json");
   await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
   return { manifest, manifestPath, folderName: candidateFolderName(candidate) };
+}
+
+function withoutConfirmationCode(row) {
+  const { confirmation_code: _confirmationCode, ...rest } = row;
+  return rest;
 }
 
 export async function backupCandidate(candidateId) {
@@ -65,7 +73,7 @@ export async function exportGlobalManifest() {
     .prepare(
       `SELECT c.sequence_no, c.applicant_no, c.full_name,
               COALESCE(s.status,'not_started') AS status,
-              s.confirmation_code, s.confirmed_at, s.verified_at,
+              s.confirmed_at, s.candidate_confirmed_at, s.admin_confirmed_at, s.verified_at,
               s.backup_status, s.error_message
        FROM candidates c
        LEFT JOIN submissions s ON s.candidate_id = c.id
@@ -90,14 +98,15 @@ export async function exportGlobalManifest() {
   const csvPath = path.join(paths.exportsDir, `exam-summary-${stamp}.csv`);
   await fs.promises.writeFile(jsonPath, JSON.stringify(payload, null, 2), "utf8");
   const csv = [
-    "sequence_no,applicant_no,full_name,status,confirmation_code,confirmed_at,backup_status,error_message",
+    "sequence_no,applicant_no,full_name,status,candidate_confirmed_at,admin_confirmed_at,confirmed_at,backup_status,error_message",
     ...candidates.map((row) =>
       [
         row.sequence_no,
         row.applicant_no,
         quoteCsv(row.full_name),
         row.status,
-        row.confirmation_code || "",
+        row.candidate_confirmed_at || "",
+        row.admin_confirmed_at || "",
         row.confirmed_at || "",
         row.backup_status || "",
         quoteCsv(row.error_message || "")

@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDownUp,
+  ArrowLeftRight,
+  Activity,
   CheckCircle2,
   Clock,
   Download,
@@ -8,6 +11,8 @@ import {
   FileCheck2,
   FileVideo,
   Home,
+  LayoutGrid,
+  ListFilter,
   Lock,
   LogOut,
   Monitor,
@@ -16,15 +21,25 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
+  Search,
   ShieldCheck,
   Square,
+  Table2,
   Upload,
   UsersRound,
   Wifi
 } from "lucide-react";
 import { api, ApiError, CHUNK_BYTES } from "./api";
 import { useRealtime } from "./hooks";
-import type { AdminState, CandidateDetail, CandidateSummary, PublicState, SubmissionFile } from "./types";
+import type {
+  AdminState,
+  AuditLogEntry,
+  AuditLogFilters,
+  CandidateDetail,
+  CandidateSummary,
+  PublicState,
+  SubmissionFile
+} from "./types";
 import {
   displayDateTime,
   fileCategory,
@@ -42,6 +57,34 @@ const candidateTokenKey = "exam:candidateToken";
 const candidateIdKey = "exam:candidateId";
 const adminTokenKey = "exam:adminToken";
 const adminRoleKey = "exam:adminRole";
+
+type TimerLike = PublicState["timer"] | AdminState["timer"] | null | undefined;
+type ProjectorView = "grid" | "table" | "cards" | "vertical" | "horizontal";
+
+function getCountdownSeconds(timer: TimerLike) {
+  if (!timer) return 0;
+  if (timer.state === "running" && timer.deadlineAt) {
+    return Math.max(0, Math.ceil((new Date(timer.deadlineAt).getTime() - Date.now()) / 1000));
+  }
+  return Math.max(0, Math.floor(timer.remainingSeconds || 0));
+}
+
+function useCountdownSeconds(timer: TimerLike) {
+  const [remainingSeconds, setRemainingSeconds] = useState(() => getCountdownSeconds(timer));
+
+  useEffect(() => {
+    setRemainingSeconds(getCountdownSeconds(timer));
+    if (timer?.state !== "running" || !timer.deadlineAt) return;
+
+    const id = window.setInterval(() => {
+      setRemainingSeconds(getCountdownSeconds(timer));
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, [timer]);
+
+  return remainingSeconds;
+}
 
 export function App() {
   const path = window.location.pathname;
@@ -77,21 +120,27 @@ function PortalPage() {
 
       <section className="portal-grid">
         <a className="portal-card primary" href="/submit">
-          <Upload size={34} />
+          <div className="card-icon-box primary-icon">
+            <Upload size={28} />
+          </div>
           <div>
             <h2>ผู้เข้าสอบส่งผลงาน</h2>
             <p>เลือกเลขผู้สมัคร อัปโหลดไฟล์ และยืนยันส่งงาน</p>
           </div>
         </a>
         <a className="portal-card" href="/admin">
-          <ShieldCheck size={34} />
+          <div className="card-icon-box">
+            <ShieldCheck size={28} />
+          </div>
           <div>
             <h2>กรรมการควบคุมสอบ</h2>
             <p>ดูภาพรวม ตรวจไฟล์ ควบคุมเวลา และ export</p>
           </div>
         </a>
         <a className="portal-card" href="/projector" target="_blank" rel="noreferrer">
-          <Monitor size={34} />
+          <div className="card-icon-box">
+            <Monitor size={28} />
+          </div>
           <div>
             <h2>จอโปรเจคเตอร์</h2>
             <p>แสดง QR, countdown และสถานะส่งงาน</p>
@@ -254,9 +303,16 @@ function CandidatePage() {
   }
 
   const timer = publicState?.timer;
-  const canUpload = timer?.state === "running" && (timer.remainingSeconds || 0) > 0;
+  const remainingSeconds = useCountdownSeconds(timer);
+  const canUpload = timer?.state === "running" && remainingSeconds > 0;
   const status = candidate?.submission.status || "not_started";
   const verifiedFiles = candidate?.files.filter((file) => file.status === "verified") || [];
+  const candidateConfirmed = Boolean(candidate?.submission.candidateConfirmedAt);
+  const canCandidateConfirm =
+    Boolean(candidate) &&
+    verifiedFiles.length > 0 &&
+    !candidateConfirmed &&
+    ["ready_to_confirm", "admin_confirmed"].includes(status);
 
   return (
     <main className="app-shell candidate-shell">
@@ -278,9 +334,16 @@ function CandidatePage() {
 
       {!candidate ? (
         <section className="panel login-panel">
-          <ShieldCheck size={36} />
+          <div className="login-icon-wrap">
+            <ShieldCheck size={32} />
+          </div>
           <h2>ยืนยันตัวผู้เข้าสอบ</h2>
           <p>กรอกลำดับที่หรือเลขประจำตัวผู้สมัคร ระบบจะแสดงชื่อให้ตรวจทานก่อนส่งไฟล์</p>
+          <ol className="login-steps">
+            <li><span>1</span>กรอกเลขผู้สมัครหรือลำดับที่</li>
+            <li><span>2</span>ตรวจสอบชื่อ-สกุลให้ถูกต้อง</li>
+            <li><span>3</span>เลือกไฟล์วิดีโอและอัปโหลด</li>
+          </ol>
           <div className="inline-form">
             <input
               value={identifier}
@@ -293,7 +356,7 @@ function CandidatePage() {
             />
             <button onClick={lookup} disabled={busy || !identifier.trim()}>
               <Play size={18} />
-              เข้าสู่ระบบส่งงาน
+              เข้าสู่ระบบ
             </button>
           </div>
           {error ? <p className="form-error">{error}</p> : null}
@@ -331,21 +394,27 @@ function CandidatePage() {
               </div>
               <Upload size={28} />
             </div>
-            <input
-              className="file-input"
-              type="file"
-              multiple
-              accept="video/*,image/*,application/pdf"
-              disabled={!canUpload || busy || status === "confirmed"}
-              onChange={(event) => setSelectedFiles(Array.from(event.target.files || []))}
-            />
+            <div className="dropzone-wrap">
+              <input
+                className="file-input"
+                type="file"
+                multiple
+                accept="video/*,image/*,application/pdf"
+                disabled={!canUpload || busy || candidateConfirmed}
+                onChange={(event) => setSelectedFiles(Array.from(event.target.files || []))}
+              />
+              <p className="dropzone-hint">
+                <Upload size={13} />
+                คลิกเพื่อเลือกไฟล์ — วิดีโอ รูปภาพ หรือ PDF
+              </p>
+            </div>
             <FileList files={selectedFiles} />
             <div className="progress-track">
               <div style={{ width: `${candidate.submission.progress || localProgress}%` }} />
             </div>
             <button
               className="primary-action"
-              disabled={!canUpload || busy || selectedFiles.length === 0 || status === "confirmed"}
+              disabled={!canUpload || busy || selectedFiles.length === 0 || candidateConfirmed}
               onClick={startUpload}
             >
               <Upload size={20} />
@@ -360,13 +429,17 @@ function CandidatePage() {
             <div className="panel-heading">
               <div>
                 <h2>ตรวจดูและยืนยัน</h2>
-                <p>กดยืนยันได้เมื่อระบบตรวจไฟล์และสร้างตัวอย่างสำเร็จ</p>
+                <p>ผู้ส่งและกรรมการเปิดดูและรับรองได้แยกกัน ระบบจะแสดงสถานะให้ทุกฝ่ายเห็นทันที</p>
               </div>
               <FileCheck2 size={28} />
             </div>
+            <ReviewStatus
+              candidateConfirmedAt={candidate.submission.candidateConfirmedAt}
+              adminConfirmedAt={candidate.submission.adminConfirmedAt}
+            />
             <SubmissionFiles files={verifiedFiles} onPreview={openPreview} />
             {preview ? <PreviewBox preview={preview} /> : null}
-            {candidate.submission.status === "ready_to_confirm" ? (
+            {canCandidateConfirm ? (
               <label className="confirm-check">
                 <input
                   type="checkbox"
@@ -378,14 +451,14 @@ function CandidatePage() {
             ) : null}
             <button
               className="primary-action"
-              disabled={busy || !previewConfirmed || candidate.submission.status !== "ready_to_confirm"}
+              disabled={busy || !previewConfirmed || !canCandidateConfirm}
               onClick={confirm}
             >
               <CheckCircle2 size={20} />
-              ยืนยันการส่งงาน
+              รับรองว่าเปิดดูได้ถูกต้อง
             </button>
-            {candidate.submission.status === "confirmed" ? (
-              <ConfirmationCard candidate={candidate} />
+            {candidateConfirmed ? (
+              <ConfirmationCard confirmedAt={candidate.submission.candidateConfirmedAt} />
             ) : null}
             {candidate.submission.errorMessage ? (
               <p className="form-error">{candidate.submission.errorMessage}</p>
@@ -403,28 +476,42 @@ function AdminPage() {
     () => (localStorage.getItem(adminRoleKey) as "admin" | "readonly") || "admin"
   );
   const [password, setPassword] = useState("");
+  const [publicState, setPublicState] = useState<PublicState | null>(null);
   const [state, setState] = useState<AdminState | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<CandidateDetail | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<{ file: SubmissionFile; url: string } | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [auditFilters, setAuditFilters] = useState<AuditLogFilters>({ limit: 100 });
 
   const isReadOnly = role === "readonly";
 
   const refresh = useCallback(async () => {
     if (!token) return;
-    const next = await api.adminState(token);
+    const [next, logResult] = await Promise.all([api.adminState(token), api.auditLogs(token, auditFilters)]);
     setState(next);
+    setAuditLogs(logResult.logs);
     if (selectedId) {
       setDetail(await api.adminCandidate(token, selectedId));
     }
-  }, [token, selectedId]);
+  }, [token, selectedId, auditFilters]);
+
+  const refreshPublic = useCallback(async () => {
+    setPublicState(await api.publicState());
+  }, []);
 
   useEffect(() => {
-    refresh().catch((err) => setError(errorText(err)));
-  }, [refresh]);
-  useRealtime(() => refresh().catch(() => undefined));
+    if (token) {
+      refresh().catch((err) => setError(errorText(err)));
+    } else {
+      refreshPublic().catch(() => undefined);
+    }
+  }, [token, refresh, refreshPublic]);
+  useRealtime(() => {
+    (token ? refresh() : refreshPublic()).catch(() => undefined);
+  });
 
   async function login() {
     setError("");
@@ -469,6 +556,11 @@ function AdminPage() {
     setPreview({ file, url: result.url });
   }
 
+  async function adminConfirm() {
+    if (!detail) return;
+    await runAction(() => api.adminConfirm(token, detail.id), "กรรมการรับรองว่าเปิดดูได้ถูกต้องแล้ว");
+  }
+
   async function startPracticalExam() {
     await runAction(() => api.startTimer(token, 3600), "เริ่มสอบปฏิบัติและนับถอยหลัง 60 นาทีแล้ว");
   }
@@ -490,8 +582,11 @@ function AdminPage() {
   if (!token) {
     return (
       <main className="app-shell admin-login">
+        <TimerPill timer={publicState?.timer} />
         <section className="panel login-panel">
-          <Lock size={38} />
+          <div className="login-icon-wrap admin-icon-wrap">
+            <Lock size={32} />
+          </div>
           <h1>เข้าสู่ระบบกรรมการ</h1>
           <p>ใช้รหัส admin สำหรับควบคุมระบบ หรือ read-only สำหรับดูสถานะและขึ้นจอ</p>
           <select value={role} onChange={(event) => setRole(event.target.value as "admin" | "readonly")}>
@@ -604,6 +699,7 @@ function AdminPage() {
                   ? runAction(() => api.unlockCandidate(token, detail.id, reason), "เปิดสิทธิ์ส่งใหม่แล้ว")
                   : Promise.resolve()
               }
+              onAdminConfirm={adminConfirm}
             />
           </section>
         </div>
@@ -615,6 +711,13 @@ function AdminPage() {
           onDone={() => refresh()}
           onError={setError}
         />
+        <AuditLogsPanel
+          logs={auditLogs}
+          filters={auditFilters}
+          candidates={state?.candidates || []}
+          onFiltersChange={setAuditFilters}
+          onRefresh={() => refresh()}
+        />
       </section>
     </main>
   );
@@ -622,6 +725,10 @@ function AdminPage() {
 
 function ProjectorPage() {
   const [state, setState] = useState<PublicState | null>(null);
+  const [view, setView] = useState<ProjectorView>(() => {
+    const value = new URLSearchParams(window.location.search).get("view");
+    return isProjectorView(value) ? value : "grid";
+  });
 
   const refresh = useCallback(async () => {
     setState(await api.publicState());
@@ -636,6 +743,22 @@ function ProjectorPage() {
 
   const settings = state?.settings;
   const rows = state?.candidates || [];
+  const remainingSeconds = useCountdownSeconds(state?.timer);
+  const submittedCount = useMemo(
+    () => rows.filter((row) => ["candidate_confirmed", "admin_confirmed", "confirmed"].includes(row.status)).length,
+    [rows]
+  );
+  const activeCount = useMemo(
+    () => rows.filter((row) => ["uploading", "verifying", "ready_to_confirm"].includes(row.status)).length,
+    [rows]
+  );
+
+  function changeView(nextView: ProjectorView) {
+    setView(nextView);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", nextView);
+    window.history.replaceState(null, "", url);
+  }
 
   return (
     <main className="projector">
@@ -648,53 +771,196 @@ function ProjectorPage() {
         </div>
         <div className="projector-clock">
           <span>เวลาคงเหลือ</span>
-          <strong>{formatSeconds(state?.timer.remainingSeconds || 0)}</strong>
+          <strong>{formatSeconds(remainingSeconds)}</strong>
         </div>
       </header>
 
       <section className="projector-body">
         <div className="projector-info">
-          <div className="qr-row">
-            <div>
-              <QrCode size={24} />
-              <h2>เข้าเว็บส่งผลงาน</h2>
-              {state?.systemUrlQr ? <img src={state.systemUrlQr} alt="QR URL ระบบส่งผลงาน" /> : null}
-              <p>{settings?.publicUrl}</p>
-            </div>
-            <div>
-              <Wifi size={24} />
-              <h2>Wi‑Fi ห้องสอบ</h2>
-              {settings?.wifiQrAvailable ? (
-                <img src={`/files/wifi-qr?ts=${Date.now()}`} alt="QR Wi-Fi ห้องสอบ" />
-              ) : (
-                <div className="qr-placeholder">รอ admin อัปโหลด QR Wi‑Fi</div>
-              )}
-            </div>
-          </div>
           <div className="projector-instructions">
             <h2>คำชี้แจง</h2>
             <p>{settings?.taskDescription}</p>
             <p>{settings?.instructions}</p>
             <p>{settings?.announcement}</p>
           </div>
-          <StatCards stats={state?.stats} projector />
         </div>
 
         <div className="projector-progress">
-          <h2>ความคืบหน้าการส่งผลงาน realtime</h2>
-          <div className="projector-grid">
-            {rows.map((row) => (
-              <div className={`projector-cell ${statusTone(row.status)}`} key={row.id}>
-                <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
-                <span>{row.applicantNo}</span>
-                <em>{statusLabel(row.status)}</em>
-                {row.confirmationCode ? <small>{row.confirmationCode}</small> : null}
+          <div className="qr-row">
+            <div>
+              <div className="qr-header">
+                <QrCode size={20} />
+                <h2>เข้าเว็บส่งผลงาน</h2>
               </div>
-            ))}
+              {state?.systemUrlQr ? (
+                <div className="qr-focal-wrap">
+                  <img src={state.systemUrlQr} alt="QR URL ระบบส่งผลงาน" />
+                </div>
+              ) : null}
+              <p>{settings?.publicUrl}</p>
+            </div>
           </div>
+          <div className="projector-progress-head">
+            <div>
+              <h2>ความคืบหน้าการส่งผลงาน realtime</h2>
+              <p>
+                {submittedCount}/{rows.length} คนส่งแล้ว • {activeCount} คนกำลังดำเนินการ
+              </p>
+            </div>
+            <div className="projector-view-switch" aria-label="เลือกมุมมองสำหรับโปรเจคเตอร์">
+              <button className={view === "grid" ? "active" : ""} onClick={() => changeView("grid")} title="Grid">
+                <LayoutGrid size={18} />
+                <span>Grid</span>
+              </button>
+              <button className={view === "table" ? "active" : ""} onClick={() => changeView("table")} title="Table">
+                <Table2 size={18} />
+                <span>Table</span>
+              </button>
+              <button className={view === "cards" ? "active" : ""} onClick={() => changeView("cards")} title="Cards">
+                <UsersRound size={18} />
+                <span>Cards</span>
+              </button>
+              <button className={view === "vertical" ? "active" : ""} onClick={() => changeView("vertical")} title="Vertical ticker">
+                <ArrowDownUp size={18} />
+                <span>Up/Down</span>
+              </button>
+              <button className={view === "horizontal" ? "active" : ""} onClick={() => changeView("horizontal")} title="Horizontal ticker">
+                <ArrowLeftRight size={18} />
+                <span>Left/Right</span>
+              </button>
+            </div>
+          </div>
+          <h2>ความคืบหน้าการส่งผลงาน realtime</h2>
+          <ProjectorProgressView rows={rows} view={view} />
+          <StatCards stats={state?.stats} projector />
         </div>
       </section>
     </main>
+  );
+}
+
+function isProjectorView(value: string | null): value is ProjectorView {
+  return value === "grid" || value === "table" || value === "cards" || value === "vertical" || value === "horizontal";
+}
+
+function ProjectorProgressView({ rows, view }: { rows: CandidateSummary[]; view: ProjectorView }) {
+  if (view === "table") return <ProjectorTable rows={rows} />;
+  if (view === "cards") return <ProjectorCards rows={rows} />;
+  if (view === "vertical") return <ProjectorVerticalTicker rows={rows} />;
+  if (view === "horizontal") return <ProjectorHorizontalTicker rows={rows} />;
+  return <ProjectorGrid rows={rows} />;
+}
+
+function ProjectorGrid({ rows }: { rows: CandidateSummary[] }) {
+  return (
+    <div className="projector-grid">
+      {rows.map((row) => (
+        <ProjectorCell row={row} key={row.id} />
+      ))}
+    </div>
+  );
+}
+
+function ProjectorCell({ row }: { row: CandidateSummary }) {
+  return (
+    <div className={`projector-cell ${statusTone(row.status)}`}>
+      <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+      <span>{row.applicantNo}</span>
+      <em>{statusLabel(row.status)}</em>
+    </div>
+  );
+}
+
+function ProjectorTable({ rows }: { rows: CandidateSummary[] }) {
+  const midpoint = Math.ceil(rows.length / 2);
+  const groups = [rows.slice(0, midpoint), rows.slice(midpoint)];
+  return (
+    <div className="projector-table-view">
+      {groups.map((group, index) => (
+        <table key={index}>
+          <thead>
+            <tr>
+              <th>ลำดับ</th>
+              <th>เลขผู้สมัคร</th>
+              <th>สถานะ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {group.map((row) => (
+              <tr className={statusTone(row.status)} key={row.id}>
+                <td>{String(row.sequenceNo).padStart(2, "0")}</td>
+                <td>{row.applicantNo}</td>
+                <td>{statusLabel(row.status)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ))}
+    </div>
+  );
+}
+
+function ProjectorCards({ rows }: { rows: CandidateSummary[] }) {
+  return (
+    <div className="projector-card-view">
+      {rows.map((row) => (
+        <article className={`projector-person-card ${statusTone(row.status)}`} key={row.id}>
+          <div>
+            <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+            <span>{row.applicantNo}</span>
+          </div>
+          <p>{row.fullName || "-"}</p>
+          <em>{statusLabel(row.status)}</em>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ProjectorVerticalTicker({ rows }: { rows: CandidateSummary[] }) {
+  const tickerRows = rows.length > 0 ? [...rows, ...rows] : [];
+  return (
+    <div className="projector-ticker vertical" aria-label="Vertical candidate progress ticker">
+      <div className="projector-ticker-track">
+        {tickerRows.map((row, index) => (
+          <ProjectorTickerRow row={row} key={`${row.id}-${index}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProjectorHorizontalTicker({ rows }: { rows: CandidateSummary[] }) {
+  const tickerRows = rows.length > 0 ? [...rows, ...rows] : [];
+  return (
+    <div className="projector-ticker horizontal" aria-label="Horizontal candidate progress ticker">
+      <div className="projector-ticker-track">
+        {tickerRows.map((row, index) => (
+          <ProjectorTickerChip row={row} key={`${row.id}-${index}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProjectorTickerRow({ row }: { row: CandidateSummary }) {
+  return (
+    <div className={`projector-ticker-row ${statusTone(row.status)}`}>
+      <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+      <span>{row.applicantNo}</span>
+      <em>{row.fullName || "-"}</em>
+      <small>{statusLabel(row.status)}</small>
+    </div>
+  );
+}
+
+function ProjectorTickerChip({ row }: { row: CandidateSummary }) {
+  return (
+    <div className={`projector-ticker-chip ${statusTone(row.status)}`}>
+      <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+      <span>{row.applicantNo}</span>
+      <em>{statusLabel(row.status)}</em>
+    </div>
   );
 }
 
@@ -731,11 +997,14 @@ function TimerControlPanel({
 }
 
 function TimerPill({ timer }: { timer?: PublicState["timer"] | AdminState["timer"] | null }) {
+  const remainingSeconds = useCountdownSeconds(timer);
+  const isRunning = timer?.state === "running";
   return (
-    <div className={`timer-pill ${timer?.state === "running" ? "running" : ""}`}>
+    <div className={`timer-pill ${isRunning ? "running" : ""}`}>
+      {isRunning ? <span className="timer-pulse" aria-hidden="true" /> : null}
       <Clock size={20} />
-      <span>{timer?.state === "running" ? "กำลังสอบ" : timer?.state === "ended" ? "ปิดรับงาน" : "ยังไม่เริ่ม"}</span>
-      <strong>{formatSeconds(timer?.remainingSeconds || 0)}</strong>
+      <span>{isRunning ? "กำลังสอบ" : timer?.state === "ended" ? "ปิดรับงาน" : "ยังไม่เริ่ม"}</span>
+      <strong>{formatSeconds(remainingSeconds)}</strong>
     </div>
   );
 }
@@ -746,6 +1015,29 @@ function StatusBadge({ status, progress = 0 }: { status: CandidateSummary["statu
       {statusLabel(status)}
       {status === "uploading" ? ` ${Math.round(progress)}%` : ""}
     </span>
+  );
+}
+
+function ReviewStatus({
+  candidateConfirmedAt,
+  adminConfirmedAt
+}: {
+  candidateConfirmedAt?: string | null;
+  adminConfirmedAt?: string | null;
+}) {
+  return (
+    <div className="review-status">
+      <div className={candidateConfirmedAt ? "ok" : ""}>
+        <span>ผู้ส่ง</span>
+        <strong>{candidateConfirmedAt ? "รับรองแล้ว" : "ยังไม่รับรอง"}</strong>
+        <small>{displayDateTime(candidateConfirmedAt)}</small>
+      </div>
+      <div className={adminConfirmedAt ? "ok" : ""}>
+        <span>กรรมการ</span>
+        <strong>{adminConfirmedAt ? "รับรองแล้ว" : "ยังไม่รับรอง"}</strong>
+        <small>{displayDateTime(adminConfirmedAt)}</small>
+      </div>
+    </div>
   );
 }
 
@@ -775,6 +1067,11 @@ function SubmissionFiles({ files, onPreview }: { files: SubmissionFile[]; onPrev
             <span>
               {formatBytes(file.size)} • {file.detectedType || "-"} • hash {shortHash(file.sha256)}
             </span>
+            {file.videoWidth && file.videoHeight ? (
+              <small className="muted-text">
+                {file.videoWidth}×{file.videoHeight} • {formatAspectRatio(file.aspectRatio)}
+              </small>
+            ) : null}
             {file.warning ? <small className="warning-text">{file.warning}</small> : null}
           </div>
           <button onClick={() => onPreview(file)}>
@@ -788,8 +1085,13 @@ function SubmissionFiles({ files, onPreview }: { files: SubmissionFile[]; onPrev
 }
 
 function PreviewBox({ preview }: { preview: { file: SubmissionFile; url: string } }) {
+  const aspectRatio = validAspectRatio(preview.file.aspectRatio);
+  const previewStyle = aspectRatio
+    ? ({ "--preview-aspect-ratio": String(aspectRatio) } as CSSProperties)
+    : undefined;
+
   return (
-    <div className="preview-box">
+    <div className="preview-box" style={previewStyle}>
       <div className="preview-heading">
         <Eye size={18} />
         <strong>{preview.file.name}</strong>
@@ -801,14 +1103,28 @@ function PreviewBox({ preview }: { preview: { file: SubmissionFile; url: string 
   );
 }
 
-function ConfirmationCard({ candidate }: { candidate: CandidateDetail }) {
+function validAspectRatio(value?: number | null) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function formatAspectRatio(value?: number | null) {
+  const ratio = validAspectRatio(value);
+  if (!ratio) return "ไม่ทราบสัดส่วน";
+  if (ratio > 1.15) return `แนวนอน ${ratio.toFixed(2)}:1`;
+  if (ratio < 0.87) return `แนวตั้ง ${ratio.toFixed(2)}:1`;
+  return `จัตุรัส ${ratio.toFixed(2)}:1`;
+}
+
+function ConfirmationCard({ confirmedAt }: { confirmedAt?: string | null }) {
   return (
     <div className="confirmation-card">
-      <CheckCircle2 size={24} />
+      <div className="confirmation-icon">
+        <CheckCircle2 size={28} />
+      </div>
       <div>
-        <span>รหัสยืนยัน</span>
-        <strong>{candidate.submission.confirmationCode}</strong>
-        <small>ยืนยันเมื่อ {displayDateTime(candidate.submission.confirmedAt)}</small>
+        <strong>ยืนยันการส่งงานแล้ว</strong>
+        <small>ยืนยันเมื่อ {displayDateTime(confirmedAt)}</small>
       </div>
     </div>
   );
@@ -821,6 +1137,8 @@ function StatCards({ stats, projector = false }: { stats?: Record<string, number
     ["uploading", "กำลังส่ง"],
     ["verifying", "กำลังตรวจ"],
     ["ready_to_confirm", "รอยืนยัน"],
+    ["candidate_confirmed", "ผู้ส่งรับรอง"],
+    ["admin_confirmed", "กรรมการรับรอง"],
     ["confirmed", "ยืนยันแล้ว"],
     ["needs_resubmit", "มีปัญหา"]
   ];
@@ -852,7 +1170,6 @@ function CandidateTable({
             <th>เลขสมัคร</th>
             <th>ชื่อ - สกุล</th>
             <th>สถานะ</th>
-            <th>รหัสยืนยัน</th>
           </tr>
         </thead>
         <tbody>
@@ -864,7 +1181,6 @@ function CandidateTable({
               <td>
                 <StatusBadge status={row.status} progress={row.progress} />
               </td>
-              <td>{row.confirmationCode || "-"}</td>
             </tr>
           ))}
         </tbody>
@@ -878,7 +1194,8 @@ function AdminInspector({
   preview,
   isReadOnly,
   onPreview,
-  onUnlock
+  onUnlock,
+  onAdminConfirm
 }: {
   token: string;
   detail: CandidateDetail | null;
@@ -886,15 +1203,21 @@ function AdminInspector({
   isReadOnly: boolean;
   onPreview: (file: SubmissionFile) => void;
   onUnlock: (reason: string) => Promise<unknown>;
+  onAdminConfirm: () => Promise<void>;
 }) {
   if (!detail) {
     return (
       <div className="empty-state">
         <Eye size={28} />
-        <p>เลือกผู้เข้าสอบเพื่อดูรายละเอียดไฟล์และรหัสยืนยัน</p>
+        <p>เลือกผู้เข้าสอบเพื่อดูรายละเอียดไฟล์ สถานะ และเวลายืนยัน</p>
       </div>
     );
   }
+  const verifiedFiles = detail.files.filter((file) => file.status === "verified");
+  const canAdminConfirm =
+    verifiedFiles.length > 0 &&
+    !detail.submission.adminConfirmedAt &&
+    ["ready_to_confirm", "candidate_confirmed"].includes(detail.submission.status);
   return (
     <div>
       <div className="panel-heading">
@@ -907,16 +1230,26 @@ function AdminInspector({
         <StatusBadge status={detail.submission.status} progress={detail.submission.progress} />
       </div>
       <div className="identity-list compact">
-        <span>รหัสยืนยัน</span>
-        <strong>{detail.submission.confirmationCode || "-"}</strong>
-        <span>ยืนยันเมื่อ</span>
+        <span>ผู้ส่งรับรอง</span>
+        <strong>{displayDateTime(detail.submission.candidateConfirmedAt)}</strong>
+        <span>กรรมการรับรอง</span>
+        <strong>{displayDateTime(detail.submission.adminConfirmedAt)}</strong>
+        <span>ครบถ้วนเมื่อ</span>
         <strong>{displayDateTime(detail.submission.confirmedAt)}</strong>
         <span>backup</span>
         <strong>{detail.submission.backupStatus || "-"}</strong>
       </div>
+      <ReviewStatus
+        candidateConfirmedAt={detail.submission.candidateConfirmedAt}
+        adminConfirmedAt={detail.submission.adminConfirmedAt}
+      />
       <SubmissionFiles files={detail.files} onPreview={onPreview} />
       {preview ? <PreviewBox preview={preview} /> : null}
       {detail.submission.errorMessage ? <p className="form-error">{detail.submission.errorMessage}</p> : null}
+      <button className="primary-action" disabled={isReadOnly || !canAdminConfirm} onClick={onAdminConfirm}>
+        <CheckCircle2 size={20} />
+        กรรมการรับรองว่าเปิดดูได้ถูกต้อง
+      </button>
       <button
         disabled={isReadOnly}
         className="danger-outline"
@@ -1055,6 +1388,156 @@ function AdminSettingsPanel({
       </div>
     </section>
   );
+}
+
+function AuditLogsPanel({
+  logs,
+  filters,
+  candidates,
+  onFiltersChange,
+  onRefresh
+}: {
+  logs: AuditLogEntry[];
+  filters: AuditLogFilters;
+  candidates: CandidateSummary[];
+  onFiltersChange: (next: AuditLogFilters) => void;
+  onRefresh: () => void;
+}) {
+  const update = (key: keyof AuditLogFilters, value: string | number) =>
+    onFiltersChange({ ...filters, [key]: value });
+
+  return (
+    <section className="panel audit-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Activity Logs</h2>
+          <p>ติดตามกิจกรรม รายการ API และเหตุการณ์สำคัญของระบบแบบละเอียด</p>
+        </div>
+        <Activity size={24} />
+      </div>
+
+      <div className="audit-filters">
+        <label>
+          <Search size={15} />
+          <input
+            value={filters.q || ""}
+            onChange={(event) => update("q", event.target.value)}
+            placeholder="ค้นหา actor, action, path, detail"
+          />
+        </label>
+        <label>
+          <ListFilter size={15} />
+          <select value={filters.level || ""} onChange={(event) => update("level", event.target.value)}>
+            <option value="">ทุกระดับ</option>
+            <option value="info">info</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+          </select>
+        </label>
+        <input
+          value={filters.actor || ""}
+          onChange={(event) => update("actor", event.target.value)}
+          placeholder="actor เช่น admin"
+        />
+        <input
+          value={filters.action || ""}
+          onChange={(event) => update("action", event.target.value)}
+          placeholder="action เช่น upload"
+        />
+        <select value={filters.candidateId || ""} onChange={(event) => update("candidateId", event.target.value)}>
+          <option value="">ผู้เข้าสอบทั้งหมด</option>
+          {candidates.map((candidate) => (
+            <option value={candidate.id} key={candidate.id}>
+              {candidate.sequenceNo}. {candidate.applicantNo}
+            </option>
+          ))}
+        </select>
+        <select value={filters.method || ""} onChange={(event) => update("method", event.target.value)}>
+          <option value="">ทุก method</option>
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="DELETE">DELETE</option>
+        </select>
+        <input type="datetime-local" value={toLocalInput(filters.from)} onChange={(event) => update("from", fromLocalInput(event.target.value))} />
+        <input type="datetime-local" value={toLocalInput(filters.to)} onChange={(event) => update("to", fromLocalInput(event.target.value))} />
+        <select value={filters.limit || 100} onChange={(event) => update("limit", Number(event.target.value))}>
+          <option value={50}>50 รายการ</option>
+          <option value={100}>100 รายการ</option>
+          <option value={250}>250 รายการ</option>
+          <option value={500}>500 รายการ</option>
+        </select>
+        <button className="ghost" onClick={onRefresh}>
+          <RefreshCw size={16} />
+          รีเฟรช
+        </button>
+      </div>
+
+      <div className="table-wrap audit-table-wrap">
+        <table className="audit-table">
+          <thead>
+            <tr>
+              <th>เวลา</th>
+              <th>ระดับ</th>
+              <th>ผู้กระทำ</th>
+              <th>กิจกรรม</th>
+              <th>Request</th>
+              <th>รายละเอียด</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((log) => (
+              <tr key={log.id}>
+                <td>{displayDateTime(log.createdAt)}</td>
+                <td>
+                  <span className={`log-level ${log.level}`}>{log.level}</span>
+                </td>
+                <td>
+                  <strong>{log.actor}</strong>
+                  <small>{log.ip || ""}</small>
+                </td>
+                <td>
+                  <strong>{log.action}</strong>
+                  <small>{log.candidateId || ""}</small>
+                </td>
+                <td>
+                  <strong>{[log.requestMethod, log.statusCode].filter(Boolean).join(" ")}</strong>
+                  <small>{log.requestPath || "-"}</small>
+                </td>
+                <td>
+                  <code>{compactDetail(log.detail)}</code>
+                </td>
+              </tr>
+            ))}
+            {!logs.length ? (
+              <tr>
+                <td colSpan={6} className="empty-cell">
+                  ไม่พบ log ตามเงื่อนไขที่เลือก
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function compactDetail(detail: Record<string, unknown>) {
+  const text = JSON.stringify(detail || {});
+  return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
+
+function toLocalInput(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function fromLocalInput(value: string) {
+  return value ? new Date(value).toISOString() : "";
 }
 
 function errorText(error: unknown) {

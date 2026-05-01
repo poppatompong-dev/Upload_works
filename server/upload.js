@@ -27,7 +27,7 @@ export function createUploadSession(candidateId, files) {
   if (!candidate) throw new Error("ไม่พบผู้เข้าสอบ");
   ensureSubmission(candidateId);
   const current = db.prepare("SELECT * FROM submissions WHERE candidate_id = ?").get(candidateId);
-  if (current?.status === "confirmed") throw new Error("ยืนยันการส่งงานแล้ว ไม่สามารถส่งซ้ำได้");
+  if (current?.candidate_confirmed_at) throw new Error("ยืนยันการส่งงานแล้ว ไม่สามารถส่งซ้ำได้");
   if (!Array.isArray(files) || files.length === 0) throw new Error("กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์");
   if (!files.some((file) => file.category === "video")) {
     throw new Error("ต้องมีไฟล์วิดีโออย่างน้อย 1 ไฟล์");
@@ -39,7 +39,9 @@ export function createUploadSession(candidateId, files) {
   try {
     db.prepare(
       `UPDATE submissions
-       SET status='uploading', active_upload_id=?, progress=0, started_at=COALESCE(started_at,?), error_message=NULL, updated_at=?
+       SET status='uploading', active_upload_id=?, progress=0, started_at=COALESCE(started_at,?),
+           candidate_confirmed_at=NULL, admin_confirmed_at=NULL, confirmed_at=NULL,
+           error_message=NULL, updated_at=?
        WHERE candidate_id=?`
     ).run(uploadId, now, now, candidateId);
     const stmt = db.prepare(
@@ -174,6 +176,14 @@ async function assembleFile(fileId) {
     new Date().toISOString(),
     fileId
   );
+  logAudit(`candidate:${candidate.applicant_no}`, "file_uploaded", {
+    candidateId: file.candidate_id,
+    uploadId: file.upload_id,
+    fileId,
+    fileName: file.original_name,
+    size: stat.size,
+    path: outputPath
+  });
 }
 
 async function maybeVerifyUpload(candidateId, uploadId) {
@@ -212,10 +222,16 @@ async function verifySubmission(candidateId, uploadId) {
     let previewPath = file.original_path;
     let thumbnailPath = null;
     let duration = null;
+    let videoWidth = null;
+    let videoHeight = null;
+    let aspectRatio = null;
     let warning = null;
     if (actualCategory === "video") {
       const probe = await probeVideo(file.original_path);
       duration = probe.durationSeconds;
+      videoWidth = probe.width;
+      videoHeight = probe.height;
+      aspectRatio = probe.aspectRatio;
       if (duration && duration > 65) warning = "วิดีโอมีความยาวเกิน 1 นาที โปรดให้กรรมการตรวจตามเกณฑ์สอบ";
       const previewDir = path.join(path.dirname(path.dirname(file.original_path)), "preview");
       previewPath = path.join(previewDir, `${file.id}.mp4`);
@@ -226,7 +242,7 @@ async function verifySubmission(candidateId, uploadId) {
     db.prepare(
       `UPDATE files
        SET detected_type=?, sha256=?, preview_path=?, thumbnail_path=?, status='verified',
-           duration_seconds=?, warning=?, updated_at=?
+           duration_seconds=?, video_width=?, video_height=?, aspect_ratio=?, warning=?, updated_at=?
        WHERE id=?`
     ).run(
       detected.mime,
@@ -234,19 +250,21 @@ async function verifySubmission(candidateId, uploadId) {
       previewPath,
       thumbnailPath,
       duration,
+      videoWidth,
+      videoHeight,
+      aspectRatio,
       warning,
       new Date().toISOString(),
       file.id
     );
   }
   if (!hasVideo) throw new Error("ต้องมีไฟล์วิดีโออย่างน้อย 1 ไฟล์");
-  const code = makeConfirmationCode(candidateId);
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE submissions
-     SET status='ready_to_confirm', progress=100, verified_at=?, confirmation_code=?, error_message=NULL, updated_at=?
+     SET status='ready_to_confirm', progress=100, verified_at=?, confirmation_code=NULL, error_message=NULL, updated_at=?
      WHERE candidate_id=?`
-  ).run(now, code, now, candidateId);
+  ).run(now, now, candidateId);
   await writeCandidateManifest(candidateId);
   try {
     await backupCandidate(candidateId);
@@ -254,15 +272,14 @@ async function verifySubmission(candidateId, uploadId) {
     db.prepare(
       "UPDATE submissions SET backup_status='failed', backup_error=?, updated_at=? WHERE candidate_id=?"
     ).run(error.message, new Date().toISOString(), candidateId);
+    logAudit(`candidate:${candidateId}`, "backup_failed", { candidateId, uploadId, error: error.message }, { level: "warning" });
   }
+  logAudit(`candidate:${candidateId}`, "submission_verified", {
+    candidateId,
+    uploadId,
+    fileCount: files.length
+  });
   broadcast();
-}
-
-function makeConfirmationCode(candidateId) {
-  const db = openDatabase();
-  const candidate = db.prepare("SELECT sequence_no FROM candidates WHERE id=?").get(candidateId);
-  const suffix = crypto.randomBytes(3).toString("hex").toUpperCase();
-  return `PR${String(candidate.sequence_no).padStart(2, "0")}-${suffix}`;
 }
 
 function markSubmissionError(candidateId, error) {
@@ -277,15 +294,47 @@ function markSubmissionError(candidateId, error) {
 export function confirmSubmission(candidateId) {
   const db = openDatabase();
   const sub = db.prepare("SELECT * FROM submissions WHERE candidate_id=?").get(candidateId);
-  if (!sub || sub.status !== "ready_to_confirm") {
+  if (!sub || !["ready_to_confirm", "admin_confirmed", "candidate_confirmed"].includes(sub.status)) {
     throw new Error("ยังไม่พร้อมยืนยัน กรุณารอระบบตรวจไฟล์ให้เสร็จ");
   }
   const now = new Date().toISOString();
-  db.prepare("UPDATE submissions SET status='confirmed', confirmed_at=?, updated_at=? WHERE candidate_id=?").run(
-    now,
-    now,
-    candidateId
-  );
+  const candidateConfirmedAt = sub.candidate_confirmed_at || now;
+  const adminConfirmedAt = sub.admin_confirmed_at || null;
+  const nextStatus = adminConfirmedAt ? "confirmed" : "candidate_confirmed";
+  const confirmedAt = adminConfirmedAt ? now : sub.confirmed_at;
+  db.prepare(
+    `UPDATE submissions
+     SET status=?, candidate_confirmed_at=?, confirmed_at=?, updated_at=?
+     WHERE candidate_id=?`
+  ).run(nextStatus, candidateConfirmedAt, confirmedAt, now, candidateId);
+  writeCandidateManifest(candidateId)
+    .then(() => backupCandidate(candidateId))
+    .catch((error) => {
+      db.prepare(
+        "UPDATE submissions SET backup_status='failed', backup_error=?, updated_at=? WHERE candidate_id=?"
+      ).run(error.message, new Date().toISOString(), candidateId);
+    })
+    .finally(() => broadcast());
+  broadcast();
+  return db.prepare("SELECT * FROM submissions WHERE candidate_id=?").get(candidateId);
+}
+
+export function confirmSubmissionByAdmin(candidateId) {
+  const db = openDatabase();
+  const sub = db.prepare("SELECT * FROM submissions WHERE candidate_id=?").get(candidateId);
+  if (!sub || !["ready_to_confirm", "admin_confirmed", "candidate_confirmed"].includes(sub.status)) {
+    throw new Error("ยังไม่พร้อมรับรอง กรุณารอระบบตรวจไฟล์ให้เสร็จ");
+  }
+  const now = new Date().toISOString();
+  const adminConfirmedAt = sub.admin_confirmed_at || now;
+  const candidateConfirmedAt = sub.candidate_confirmed_at || null;
+  const nextStatus = candidateConfirmedAt ? "confirmed" : "admin_confirmed";
+  const confirmedAt = candidateConfirmedAt ? now : sub.confirmed_at;
+  db.prepare(
+    `UPDATE submissions
+     SET status=?, admin_confirmed_at=?, confirmed_at=?, updated_at=?
+     WHERE candidate_id=?`
+  ).run(nextStatus, adminConfirmedAt, confirmedAt, now, candidateId);
   writeCandidateManifest(candidateId)
     .then(() => backupCandidate(candidateId))
     .catch((error) => {

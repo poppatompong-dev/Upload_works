@@ -68,7 +68,43 @@ export async function probeVideo(filePath) {
   const hasVideo = Array.isArray(parsed.streams) && parsed.streams.some((s) => s.codec_type === "video");
   if (!hasVideo) throw new Error("ไม่พบ video stream ในไฟล์");
   const duration = Number(parsed.format?.duration || 0);
-  return { durationSeconds: Number.isFinite(duration) ? duration : null, info: parsed };
+  return { durationSeconds: Number.isFinite(duration) ? duration : null, ...videoDisplayMetadata(parsed), info: parsed };
+}
+
+function parseRatio(value) {
+  const [left, right] = String(value || "").split(":").map(Number);
+  if (!Number.isFinite(left) || !Number.isFinite(right) || right === 0) return 1;
+  return left / right;
+}
+
+function rotationDegrees(stream) {
+  const rawRotate = stream?.tags?.rotate ?? stream?.side_data_list?.find((data) => data.rotation)?.rotation;
+  const rotate = Number(rawRotate || 0);
+  return Number.isFinite(rotate) ? Math.abs(rotate) % 180 : 0;
+}
+
+export function videoDisplayMetadata(probeInfo) {
+  const stream = probeInfo?.streams?.find((item) => item.codec_type === "video");
+  if (!stream) return { width: null, height: null, aspectRatio: null };
+
+  let width = Number(stream.width || 0);
+  let height = Number(stream.height || 0);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: null, height: null, aspectRatio: null };
+  }
+
+  if (rotationDegrees(stream) === 90) {
+    [width, height] = [height, width];
+  }
+
+  const sampleAspectRatio = parseRatio(stream.sample_aspect_ratio);
+  const displayWidth = Math.max(1, Math.round(width * sampleAspectRatio));
+  const aspectRatio = displayWidth / height;
+  return {
+    width: displayWidth,
+    height,
+    aspectRatio: Number.isFinite(aspectRatio) ? aspectRatio : null
+  };
 }
 
 export async function transcodePreview(inputPath, outputPath) {
@@ -91,6 +127,8 @@ export async function transcodePreview(inputPath, outputPath) {
       "23",
       "-pix_fmt",
       "yuv420p",
+      "-vf",
+      "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
       "-c:a",
       "aac",
       "-b:a",

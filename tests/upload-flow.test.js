@@ -14,7 +14,7 @@ process.env.PUBLIC_URL = "http://127.0.0.1:18080";
 
 const ffmpegPath = (await import("ffmpeg-static")).default;
 const { openDatabase, ensureSubmission } = await import("../server/db.js");
-const { createUploadSession, acceptChunk, confirmSubmission } = await import("../server/upload.js");
+const { createUploadSession, acceptChunk, confirmSubmission, confirmSubmissionByAdmin } = await import("../server/upload.js");
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -93,9 +93,19 @@ test("chunk upload verifies, transcodes, confirms, and backs up a video", async 
   assert.equal(file.status, "verified");
   assert.ok(file.sha256);
   assert.ok(fs.existsSync(file.preview_path));
+  assert.equal(file.video_width, 320);
+  assert.equal(file.video_height, 180);
+  assert.equal(file.aspect_ratio, 320 / 180);
 
   const confirmed = confirmSubmission("cand-flow");
-  assert.equal(confirmed.status, "confirmed");
+  assert.equal(confirmed.status, "candidate_confirmed");
+  assert.ok(confirmed.candidate_confirmed_at);
+
+  const adminConfirmed = confirmSubmissionByAdmin("cand-flow");
+  assert.equal(adminConfirmed.status, "confirmed");
+  assert.ok(adminConfirmed.admin_confirmed_at);
   const afterBackup = await waitForStatus("cand-flow", ["confirmed"]);
-  assert.equal(afterBackup.confirmation_code, confirmed.confirmation_code);
+  assert.ok(afterBackup.candidate_confirmed_at);
+  assert.ok(afterBackup.admin_confirmed_at);
+  assert.ok(afterBackup.confirmed_at);
 });

@@ -7,15 +7,48 @@ import { getFreeBytes } from "./fs-utils.js";
 export function localLanUrl() {
   const override = process.env.PUBLIC_URL || getSetting("publicUrl", "");
   if (override) return override;
-  const nets = os.networkInterfaces();
-  for (const values of Object.values(nets)) {
+  const address = preferredLanAddress(os.networkInterfaces());
+  if (address) return `http://${address}:${config.port}`;
+  return `http://localhost:${config.port}`;
+}
+
+export function preferredLanAddress(nets) {
+  const candidates = [];
+  const skipInterface = /(?:loopback|virtual|vmware|vbox|hyper-v|wsl|vpn|tunnel|teredo|isatap|docker|bluetooth)/i;
+  for (const [name, values] of Object.entries(nets)) {
+    const virtualPenalty = skipInterface.test(name) ? 100 : 0;
     for (const item of values || []) {
-      if (item.family === "IPv4" && !item.internal && !item.address.startsWith("169.254.")) {
-        return `http://${item.address}:${config.port}`;
-      }
+      if (!isUsableIpv4(item)) continue;
+      candidates.push({
+        address: item.address,
+        score: virtualPenalty + interfacePenalty(name) + addressPenalty(item.address)
+      });
     }
   }
-  return `http://localhost:${config.port}`;
+  candidates.sort((a, b) => a.score - b.score || a.address.localeCompare(b.address));
+  return candidates[0]?.address || "";
+}
+
+function isUsableIpv4(item) {
+  return (
+    item?.family === "IPv4" &&
+    !item.internal &&
+    !item.address.startsWith("127.") &&
+    !item.address.startsWith("169.254.")
+  );
+}
+
+function interfacePenalty(name) {
+  if (/wi-?fi|wireless|wlan/i.test(name)) return 0;
+  if (/ethernet|lan/i.test(name)) return 10;
+  return 30;
+}
+
+function addressPenalty(address) {
+  if (address.startsWith("192.168.")) return 0;
+  if (/^10\./.test(address)) return 5;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) return 10;
+  return 50;
 }
 
 export function settingsPayload() {
@@ -56,6 +89,8 @@ export function statsFor(rows) {
     uploading: 0,
     verifying: 0,
     ready_to_confirm: 0,
+    candidate_confirmed: 0,
+    admin_confirmed: 0,
     confirmed: 0,
     needs_resubmit: 0,
     expired: 0
@@ -91,8 +126,9 @@ export async function publicState() {
     applicantNo: row.applicant_no,
     status: row.status,
     progress: row.progress,
-    confirmationCode: row.status === "confirmed" ? row.confirmation_code : null,
     confirmedAt: row.confirmed_at,
+    candidateConfirmedAt: row.candidate_confirmed_at,
+    adminConfirmedAt: row.admin_confirmed_at,
     errorMessage: row.status === "needs_resubmit" ? row.error_message : null
   }));
   const settings = settingsPayload();
@@ -121,7 +157,8 @@ export async function adminState() {
     verifyingAt: row.verifying_at,
     verifiedAt: row.verified_at,
     confirmedAt: row.confirmed_at,
-    confirmationCode: row.confirmation_code,
+    candidateConfirmedAt: row.candidate_confirmed_at,
+    adminConfirmedAt: row.admin_confirmed_at,
     errorMessage: row.error_message,
     backupStatus: row.backup_status,
     backupError: row.backup_error

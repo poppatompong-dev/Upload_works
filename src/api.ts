@@ -1,4 +1,4 @@
-import type { AdminState, CandidateDetail, PublicState } from "./types";
+import type { AdminState, AuditLogEntry, AuditLogFilters, CandidateDetail, PublicState } from "./types";
 
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -12,10 +12,11 @@ export class ApiError extends Error {
 }
 
 async function requestJson<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const hasJsonBody = options.body !== undefined && !(options.body instanceof FormData);
   const response = await fetch(url, {
     ...options,
     headers: {
-      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {})
     }
   });
@@ -42,6 +43,17 @@ export const api = {
     requestJson<CandidateDetail>(`/api/admin/candidates/${id}`, {
       headers: authHeader(token)
     }),
+  auditLogs: (token: string, filters: AuditLogFilters = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        params.set(key, String(value));
+      }
+    }
+    return requestJson<{ ok: true; logs: AuditLogEntry[] }>(`/api/admin/audit-logs?${params}`, {
+      headers: authHeader(token)
+    });
+  },
   updateSettings: (token: string, payload: Record<string, string>) =>
     requestJson<{ ok: true }>("/api/admin/settings", {
       method: "POST",
@@ -80,6 +92,11 @@ export const api = {
       method: "POST",
       headers: authHeader(token),
       body: JSON.stringify({ reason })
+    }),
+  adminConfirm: (token: string, id: string) =>
+    requestJson<{ ok: true }>(`/api/admin/candidates/${id}/confirm`, {
+      method: "POST",
+      headers: authHeader(token)
     }),
   exportManifest: (token: string) =>
     requestJson<{ ok: true; jsonPath: string; csvPath: string }>("/api/admin/export", {
