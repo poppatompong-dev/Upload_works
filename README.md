@@ -10,8 +10,8 @@
 
 ค่าเริ่มต้นรหัสผ่าน:
 
-- admin: `Admin@PR2569`
-- read-only: `View@PR2569`
+- admin: `admin2569`
+- read-only: `view2569`
 
 ควรเปลี่ยนผ่าน environment variables ก่อนวันสอบจริง: `EXAM_ADMIN_PASSWORD`, `EXAM_READONLY_PASSWORD`
 

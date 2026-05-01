@@ -12,8 +12,8 @@ export const config = {
   backupRoot: process.env.EXAM_BACKUP_ROOT || "C:\\ExamSubmissionsBackup\\PR-2569",
   uploadWorksRoot:
     process.env.UPLOAD_WORKS_DIR || path.join(os.homedir(), "Documents", "Upload_Works"),
-  adminPassword: process.env.EXAM_ADMIN_PASSWORD || "Admin@PR2569",
-  readOnlyPassword: process.env.EXAM_READONLY_PASSWORD || "View@PR2569",
+  adminPassword: process.env.EXAM_ADMIN_PASSWORD || "admin2569",
+  readOnlyPassword: process.env.EXAM_READONLY_PASSWORD || "view2569",
   exam: {
     title: "การสอบปฏิบัติตำแหน่งผู้ช่วยนักประชาสัมพันธ์",
     organization: "เทศบาลนครนครสวรรค์",
