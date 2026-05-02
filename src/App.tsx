@@ -562,7 +562,9 @@ function AdminPage() {
   }
 
   async function startPracticalExam() {
-    await runAction(() => api.startTimer(token, 3600), "เริ่มสอบปฏิบัติและนับถอยหลัง 60 นาทีแล้ว");
+    const duration = state?.settings.durationSeconds || 3600;
+    const mins = Math.round(duration / 60);
+    await runAction(() => api.startTimer(token, duration), `เริ่มสอบปฏิบัติและนับถอยหลัง ${mins} นาทีแล้ว`);
   }
 
   async function stopPracticalExam() {
@@ -573,9 +575,11 @@ function AdminPage() {
   }
 
   async function restartPracticalExam() {
-    const ok = window.confirm("เริ่มนับถอยหลัง 60 นาทีใหม่หรือไม่ การเริ่มใหม่จะไม่ลบไฟล์หรือสถานะที่ส่งไว้แล้ว");
+    const duration = state?.settings.durationSeconds || 3600;
+    const mins = Math.round(duration / 60);
+    const ok = window.confirm(`เริ่มนับถอยหลัง ${mins} นาทีใหม่หรือไม่ การเริ่มใหม่จะไม่ลบไฟล์หรือสถานะที่ส่งไว้แล้ว`);
     if (ok) {
-      await runAction(() => api.startTimer(token, 3600), "เริ่มนับถอยหลัง 60 นาทีใหม่แล้ว");
+      await runAction(() => api.startTimer(token, duration), `เริ่มนับถอยหลัง ${mins} นาทีใหม่แล้ว`);
     }
   }
 
@@ -1290,7 +1294,7 @@ function AdminSettingsPanel({
         taskDescription: settings.taskDescription,
         instructions: settings.instructions,
         announcement: settings.announcement,
-        publicUrl: settings.publicUrl
+        publicUrl: settings.publicUrlCustom
       });
     }
   }, [settings]);
@@ -1336,12 +1340,18 @@ function AdminSettingsPanel({
           onChange={(event) => setDraft({ ...draft, location: event.target.value })}
           placeholder="สถานที่"
         />
-        <input
-          disabled={isReadOnly}
-          value={draft.publicUrl || ""}
-          onChange={(event) => setDraft({ ...draft, publicUrl: event.target.value })}
-          placeholder="URL สำหรับ QR ระบบ"
-        />
+        <div>
+          <input
+            disabled={isReadOnly}
+            value={draft.publicUrl || ""}
+            onChange={(event) => setDraft({ ...draft, publicUrl: event.target.value })}
+            placeholder="ปล่อยว่างเพื่อตรวจจับ IP อัตโนมัติ"
+          />
+          <p className="muted-text" style={{ fontSize: 12, marginTop: 6 }}>
+            ตรวจพบอัตโนมัติ: <strong>{settings?.publicUrl}</strong>
+            {draft.publicUrl ? " (กำลังใช้ค่าที่กำหนดเอง)" : " (กำลังใช้งานอยู่)"}
+          </p>
+        </div>
         <textarea
           disabled={isReadOnly}
           value={draft.taskDescription || ""}

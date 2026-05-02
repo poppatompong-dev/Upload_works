@@ -7,7 +7,7 @@ import websocket from "@fastify/websocket";
 import { openDatabase, setSetting, getSetting, logAudit, ensureSubmission, passwordHash, listAuditLogs } from "./db.js";
 import { createSession, requireAdmin, requireCandidate, verifyPassword, canAccessCandidate, getSession } from "./auth.js";
 import { addSocket, broadcast } from "./realtime.js";
-import { adminState, publicState, settingsPayload } from "./state.js";
+import { adminState, healthPayload, publicState, settingsPayload } from "./state.js";
 import { config, paths, uploadPolicy } from "./config.js";
 import { ensureDir, safeFileName } from "./fs-utils.js";
 import { detectBuffer } from "./media.js";
@@ -15,6 +15,10 @@ import { acceptChunk, confirmSubmission, confirmSubmissionByAdmin, createUploadS
 import { exportGlobalManifest } from "./exporter.js";
 
 const fileAccessTokens = new Map();
+
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 10 * 60 * 1000;
+const loginAttempts = new Map();
 
 export async function registerRoutes(app) {
   await app.register(websocket);
@@ -60,18 +64,40 @@ export async function registerRoutes(app) {
   app.get("/api/public/state", async () => publicState());
 
   app.post("/api/auth/login", async (request, reply) => {
+    const clientIp = request.ip;
     const { password, role } = request.body || {};
     const normalizedRole = role === "readonly" ? "readonly" : "admin";
+    const rec = loginAttempts.get(clientIp);
+    if (rec?.lockedUntil > Date.now()) {
+      const secs = Math.ceil((rec.lockedUntil - Date.now()) / 1000);
+      logAudit(
+        "anonymous",
+        "login_rate_limited",
+        { role: normalizedRole, remainingSeconds: secs },
+        requestAuditMetadata(request, reply, null, null, "warning")
+      );
+      reply.code(429);
+      return { ok: false, error: `พยายาม login ผิดพลาดหลายครั้ง กรุณารอ ${Math.ceil(secs / 60)} นาที` };
+    }
     if (!password || !verifyPassword(normalizedRole, password)) {
+      const next = loginAttempts.get(clientIp) || { count: 0, lockedUntil: 0 };
+      if (next.lockedUntil < Date.now()) next.count = 0;
+      next.count += 1;
+      if (next.count >= LOGIN_MAX_ATTEMPTS) {
+        next.lockedUntil = Date.now() + LOGIN_LOCKOUT_MS;
+        next.count = 0;
+      }
+      loginAttempts.set(clientIp, next);
       logAudit(
         "anonymous",
         "login_failed",
-        { role: normalizedRole },
+        { role: normalizedRole, attempt: next.count || LOGIN_MAX_ATTEMPTS },
         requestAuditMetadata(request, reply, null, null, "warning")
       );
       reply.code(401);
       return { ok: false, error: "รหัสผ่านไม่ถูกต้อง" };
     }
+    loginAttempts.delete(clientIp);
     const session = createSession(normalizedRole);
     logAudit(normalizedRole, "login", { role: normalizedRole });
     return { ok: true, ...session };
@@ -85,6 +111,11 @@ export async function registerRoutes(app) {
   app.get("/api/admin/settings", async (request, reply) => {
     requireAdmin(request, reply, true);
     return settingsPayload();
+  });
+
+  app.get("/api/admin/health", async (request, reply) => {
+    requireAdmin(request, reply, true);
+    return healthPayload();
   });
 
   app.get("/api/admin/audit-logs", async (request, reply) => {

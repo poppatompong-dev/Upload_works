@@ -28,6 +28,9 @@ export function createUploadSession(candidateId, files) {
   ensureSubmission(candidateId);
   const current = db.prepare("SELECT * FROM submissions WHERE candidate_id = ?").get(candidateId);
   if (current?.candidate_confirmed_at) throw new Error("ยืนยันการส่งงานแล้ว ไม่สามารถส่งซ้ำได้");
+  if (current?.active_upload_id) {
+    fs.promises.rm(path.join(paths.tempDir, current.active_upload_id), { recursive: true, force: true }).catch(() => {});
+  }
   if (!Array.isArray(files) || files.length === 0) throw new Error("กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์");
   if (!files.some((file) => file.category === "video")) {
     throw new Error("ต้องมีไฟล์วิดีโออย่างน้อย 1 ไฟล์");
@@ -176,6 +179,7 @@ async function assembleFile(fileId) {
     new Date().toISOString(),
     fileId
   );
+  fs.promises.rm(chunkDir, { recursive: true, force: true }).catch(() => {});
   logAudit(`candidate:${candidate.applicant_no}`, "file_uploaded", {
     candidateId: file.candidate_id,
     uploadId: file.upload_id,
@@ -317,6 +321,24 @@ export function confirmSubmission(candidateId) {
     .finally(() => broadcast());
   broadcast();
   return db.prepare("SELECT * FROM submissions WHERE candidate_id=?").get(candidateId);
+}
+
+export async function cleanupStaleTemp() {
+  const db = openDatabase();
+  let entries;
+  try {
+    entries = await fs.promises.readdir(paths.tempDir);
+  } catch {
+    return;
+  }
+  for (const uploadId of entries) {
+    const active = db
+      .prepare("SELECT COUNT(*) AS count FROM files WHERE upload_id=? AND status='uploading'")
+      .get(uploadId);
+    if (!active || active.count === 0) {
+      await fs.promises.rm(path.join(paths.tempDir, uploadId), { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 export function confirmSubmissionByAdmin(candidateId) {

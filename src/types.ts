@@ -21,6 +21,7 @@ export interface ExamSettings {
   instructions: string;
   announcement: string;
   publicUrl: string;
+  publicUrlCustom: string;
   wifiQrAvailable: boolean;
 }
 

@@ -116,7 +116,37 @@ export async function exportGlobalManifest() {
   await fs.promises.writeFile(csvPath, csv, "utf8");
   await copyFileSafe(jsonPath, path.join(paths.backupExportsDir, path.basename(jsonPath)));
   await copyFileSafe(csvPath, path.join(paths.backupExportsDir, path.basename(csvPath)));
-  return { jsonPath, csvPath };
+
+  const auditRows = db
+    .prepare(
+      `SELECT id, created_at, level, actor, action, candidate_id,
+              request_method, request_path, status_code, ip, detail_json
+       FROM audit_logs ORDER BY id ASC`
+    )
+    .all();
+  const auditCsvPath = path.join(paths.exportsDir, `audit-logs-${stamp}.csv`);
+  const auditCsv = [
+    "id,created_at,level,actor,action,candidate_id,request_method,request_path,status_code,ip,detail",
+    ...auditRows.map((row) =>
+      [
+        row.id,
+        row.created_at,
+        row.level,
+        quoteCsv(row.actor),
+        quoteCsv(row.action),
+        row.candidate_id || "",
+        row.request_method || "",
+        quoteCsv(row.request_path || ""),
+        row.status_code || "",
+        row.ip || "",
+        quoteCsv(row.detail_json || "{}")
+      ].join(",")
+    )
+  ].join("\r\n");
+  await fs.promises.writeFile(auditCsvPath, auditCsv, "utf8");
+  await copyFileSafe(auditCsvPath, path.join(paths.backupExportsDir, path.basename(auditCsvPath)));
+
+  return { jsonPath, csvPath, auditCsvPath };
 }
 
 function quoteCsv(value) {

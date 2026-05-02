@@ -1,7 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
 import os from "node:os";
 import QRCode from "qrcode";
+import ffmpegBinPath from "ffmpeg-static";
+import ffprobeStatic from "ffprobe-static";
 import { config, paths, uploadPolicy } from "./config.js";
-import { adminCandidateRows, getSetting, publicCandidateRows, timerRow } from "./db.js";
+import { adminCandidateRows, getSetting, openDatabase, passwordHash, publicCandidateRows, timerRow } from "./db.js";
 import { getFreeBytes } from "./fs-utils.js";
 
 export function localLanUrl() {
@@ -63,6 +67,7 @@ export function settingsPayload() {
     instructions: getSetting("instructions", config.exam.instructions),
     announcement: getSetting("announcement", ""),
     publicUrl: localLanUrl(),
+    publicUrlCustom: getSetting("publicUrl", ""),
     wifiQrAvailable: getSetting("wifiQrPath", "") !== ""
   };
 }
@@ -108,6 +113,14 @@ export function systemWarnings() {
   }
   if (backupFree !== null && backupFree < uploadPolicy.lowDiskWarningBytes) {
     warnings.push("พื้นที่ C: สำหรับสำรองเหลือน้อยกว่า 20 GB");
+  }
+  const adminHash = getSetting("adminPasswordHash", "");
+  const readonlyHash = getSetting("readOnlyPasswordHash", "");
+  if (adminHash && adminHash === passwordHash(config.adminPassword)) {
+    warnings.push("กรุณาเปลี่ยนรหัส admin จากค่า default ก่อนเริ่มสอบ");
+  }
+  if (readonlyHash && readonlyHash === passwordHash(config.readOnlyPassword)) {
+    warnings.push("กรุณาเปลี่ยนรหัส read-only จากค่า default ก่อนเริ่มสอบ");
   }
   return {
     dataFreeBytes: dataFree,
@@ -169,6 +182,42 @@ export async function adminState() {
     stats: statsFor(candidates),
     candidates,
     system: systemWarnings()
+  };
+}
+
+export async function healthPayload() {
+  const db = openDatabase();
+  const rosterCount = db.prepare("SELECT COUNT(*) AS count FROM candidates").get().count;
+  let dbWritable = false;
+  try {
+    db.prepare("SELECT 1").get();
+    dbWritable = true;
+  } catch {}
+  let backupWritable = false;
+  try {
+    await fs.promises.mkdir(paths.backupRoot, { recursive: true });
+    const probe = path.join(paths.backupRoot, ".write-probe");
+    await fs.promises.writeFile(probe, "ok");
+    await fs.promises.unlink(probe);
+    backupWritable = true;
+  } catch {}
+  const ffmpegAvailable = typeof ffmpegBinPath === "string" && fs.existsSync(ffmpegBinPath);
+  const ffprobeAvailable = typeof ffprobeStatic?.path === "string" && fs.existsSync(ffprobeStatic.path);
+  const disk = systemWarnings();
+  return {
+    ok: dbWritable && backupWritable && ffmpegAvailable && ffprobeAvailable && rosterCount > 0,
+    rosterCount,
+    dbWritable,
+    backupWritable,
+    ffmpegAvailable,
+    ffprobeAvailable,
+    disk: {
+      dataFreeBytes: disk.dataFreeBytes,
+      backupFreeBytes: disk.backupFreeBytes,
+      dataRoot: config.dataRoot,
+      backupRoot: config.backupRoot
+    },
+    warnings: disk.warnings
   };
 }
 

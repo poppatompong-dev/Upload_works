@@ -3,6 +3,7 @@ import { config, paths } from "./config.js";
 import { ensureDir } from "./fs-utils.js";
 import { openDatabase, logAudit } from "./db.js";
 import { registerRoutes } from "./routes.js";
+import { cleanupStaleTemp } from "./upload.js";
 
 const app = Fastify({
   logger: {
@@ -23,6 +24,7 @@ async function bootstrap() {
     ensureDir(paths.uploadWorksAssetsDir)
   ]);
   openDatabase();
+  await cleanupStaleTemp().catch((err) => app.log.warn({ err }, "stale temp cleanup failed"));
   await registerRoutes(app);
   await app.listen({ port: config.port, host: config.host });
   logAudit("system", "server_started", {
