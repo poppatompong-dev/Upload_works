@@ -7,6 +7,51 @@ import ffprobeStatic from "ffprobe-static";
 import { uploadPolicy } from "./config.js";
 
 const ffprobePath = ffprobeStatic.path;
+const videoExtensions = new Set([
+  ".3g2",
+  ".3gp",
+  ".3gpp",
+  ".asf",
+  ".avi",
+  ".divx",
+  ".dv",
+  ".f4v",
+  ".flv",
+  ".hevc",
+  ".m1v",
+  ".m2t",
+  ".m2ts",
+  ".m2v",
+  ".m4v",
+  ".mjpeg",
+  ".mjpg",
+  ".mkv",
+  ".mov",
+  ".mp4",
+  ".mpe",
+  ".mpeg",
+  ".mpg",
+  ".mts",
+  ".mxf",
+  ".ogm",
+  ".ogv",
+  ".qt",
+  ".rm",
+  ".rmvb",
+  ".tod",
+  ".ts",
+  ".vob",
+  ".webm",
+  ".wmv",
+  ".xvid"
+]);
+const videoMimeExceptions = new Set([
+  "application/mxf",
+  "application/ogg",
+  "application/vnd.rn-realmedia",
+  "application/x-matroska",
+  "application/x-mpegurl"
+]);
 
 export async function detectFile(filePath) {
   return (await fileTypeFromFile(filePath)) || { mime: "application/octet-stream", ext: "" };
@@ -16,8 +61,15 @@ export async function detectBuffer(buffer) {
   return (await fileTypeFromBuffer(buffer)) || { mime: "application/octet-stream", ext: "" };
 }
 
-export function classifyAllowed(mime) {
+export function isKnownVideoExtension(fileName = "") {
+  return videoExtensions.has(path.extname(fileName).toLowerCase());
+}
+
+export function classifyAllowed(mime, fileName = "") {
   if (mime?.startsWith("video/")) return "video";
+  if (videoMimeExceptions.has(mime)) return "video";
+  if ((mime === "application/octet-stream" || !mime) && isKnownVideoExtension(fileName)) return "video";
+  if (isKnownVideoExtension(fileName) && videoMimeExceptions.has(mime)) return "video";
   if (uploadPolicy.allowedImageMimes.has(mime)) return "image";
   if (uploadPolicy.allowedDocumentMimes.has(mime)) return "document";
   return "unsupported";

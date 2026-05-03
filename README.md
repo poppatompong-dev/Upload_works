@@ -4,7 +4,7 @@
 
 ## URL หลัก
 
-- ผู้เข้าสอบ: `http://<server-ip>:8080`
+- ผู้เข้าสอบ: `http://<server-ip>:8080` หรือ `http://<server-ip>:8080/submit`
 - กรรมการ: `http://<server-ip>:8080/admin`
 - โปรเจคเตอร์: `http://<server-ip>:8080/projector`
 
@@ -39,3 +39,9 @@
 - กด Export ในหน้า admin หรือรัน `ops\export-now.ps1`
 - เก็บโฟลเดอร์ `D:\ExamSubmissions\PR-2569\exports` และสำเนาใน `C:\ExamSubmissionsBackup\PR-2569\exports`
 - สุ่มเปิดไฟล์ original และ preview MP4 จากหลายลำดับ แล้วเทียบรหัสยืนยัน/sha256 ใน manifest
+
+## ล้างข้อมูลทดสอบก่อนวันจริง
+
+- วิธีแนะนำ: login `/admin` ด้วย role admin แล้วกด `Clear Test Data`
+- วิธี dev/script: `npm run clear:test-data`
+- ระบบจะล้าง submissions, temp chunks, backup submissions และ reset สถานะส่งงาน แต่เก็บรายชื่อผู้เข้าสอบ, settings, timer, audit logs, exports, roster และ QR Wi-Fi ไว้

@@ -13,6 +13,7 @@ process.env.UPLOAD_WORKS_DIR = path.join(root, "upload_works");
 process.env.PUBLIC_URL = "http://127.0.0.1:18080";
 
 const ffmpegPath = (await import("ffmpeg-static")).default;
+const { paths, uploadPolicy } = await import("../server/config.js");
 const { openDatabase, ensureSubmission } = await import("../server/db.js");
 const { createUploadSession, acceptChunk, confirmSubmission, confirmSubmissionByAdmin } = await import("../server/upload.js");
 
@@ -76,16 +77,27 @@ test("chunk upload verifies, transcodes, confirms, and backs up a video", async 
     "aac",
     sample
   ]);
-  const body = fs.readFileSync(sample);
-  const session = createUploadSession("cand-flow", [
-    { name: "sample.mp4", size: body.length, type: "video/mp4", category: "video", totalChunks: 1 }
+  const body = Buffer.concat([
+    fs.readFileSync(sample),
+    Buffer.alloc(uploadPolicy.chunkBytes + 512 * 1024, 0)
   ]);
-  await acceptChunk({
-    uploadId: session.uploadId,
-    fileId: session.files[0].id,
-    chunkIndex: 0,
-    body
-  });
+  const totalChunks = Math.ceil(body.length / uploadPolicy.chunkBytes);
+  const session = createUploadSession("cand-flow", [
+    { name: "sample.mp4", size: body.length, type: "video/mp4", category: "video", totalChunks }
+  ]);
+  assert.equal(totalChunks >= 2, true);
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    await acceptChunk({
+      uploadId: session.uploadId,
+      fileId: session.files[0].id,
+      chunkIndex,
+      body: body.subarray(
+        chunkIndex * uploadPolicy.chunkBytes,
+        Math.min(body.length, (chunkIndex + 1) * uploadPolicy.chunkBytes)
+      )
+    });
+  }
+  assert.equal(fs.existsSync(path.join(paths.tempDir, session.uploadId)), false);
 
   const ready = await waitForStatus("cand-flow", ["ready_to_confirm", "needs_resubmit"]);
   assert.equal(ready.status, "ready_to_confirm", ready.error_message || "");

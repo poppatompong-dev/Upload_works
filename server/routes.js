@@ -4,15 +4,17 @@ import crypto from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
+import QRCode from "qrcode";
 import { openDatabase, setSetting, getSetting, logAudit, ensureSubmission, passwordHash, listAuditLogs } from "./db.js";
-import { createSession, requireAdmin, requireCandidate, verifyPassword, canAccessCandidate, getSession } from "./auth.js";
+import { createSession, requireAdmin, requireCandidate, verifyPassword, canAccessCandidate, getSession, readBearer } from "./auth.js";
 import { addSocket, broadcast } from "./realtime.js";
-import { adminState, healthPayload, publicState, settingsPayload } from "./state.js";
+import { adminState, healthPayload, publicState, settingsPayload, submitState } from "./state.js";
 import { config, paths, uploadPolicy } from "./config.js";
 import { ensureDir, safeFileName } from "./fs-utils.js";
 import { detectBuffer } from "./media.js";
 import { acceptChunk, confirmSubmission, confirmSubmissionByAdmin, createUploadSession } from "./upload.js";
 import { exportGlobalManifest } from "./exporter.js";
+import { clearTestData } from "./reset.js";
 
 const fileAccessTokens = new Map();
 
@@ -62,6 +64,18 @@ export async function registerRoutes(app) {
   }));
 
   app.get("/api/public/state", async () => publicState());
+  app.get("/api/public/submit-state", async () => submitState());
+  app.get("/api/public/qr", async (request, reply) => {
+    const text = String(request.query?.text || "").trim();
+    const size = Math.min(420, Math.max(120, Number(request.query?.size || 220)));
+    if (!text || text.length > 1024) {
+      reply.code(400);
+      return { ok: false, error: "ข้อมูลสำหรับสร้าง QR ไม่ถูกต้อง" };
+    }
+    const buffer = await QRCode.toBuffer(text, { margin: 1, width: size, errorCorrectionLevel: "M" });
+    reply.header("content-type", "image/png");
+    return reply.send(buffer);
+  });
 
   app.post("/api/auth/login", async (request, reply) => {
     const clientIp = request.ip;
@@ -81,7 +95,10 @@ export async function registerRoutes(app) {
     }
     if (!password || !verifyPassword(normalizedRole, password)) {
       const next = loginAttempts.get(clientIp) || { count: 0, lockedUntil: 0 };
-      if (next.lockedUntil < Date.now()) next.count = 0;
+      if (next.lockedUntil && next.lockedUntil < Date.now()) {
+        next.count = 0;
+        next.lockedUntil = 0;
+      }
       next.count += 1;
       if (next.count >= LOGIN_MAX_ATTEMPTS) {
         next.lockedUntil = Date.now() + LOGIN_LOCKOUT_MS;
@@ -143,10 +160,13 @@ export async function registerRoutes(app) {
       "position",
       "location",
       "reportTime",
+      "durationSeconds",
       "taskDescription",
       "instructions",
       "announcement",
-      "publicUrl"
+      "publicUrl",
+      "wifiSsid",
+      "wifiPassword"
     ];
     for (const key of allowed) {
       if (Object.prototype.hasOwnProperty.call(request.body || {}, key)) {
@@ -268,6 +288,39 @@ export async function registerRoutes(app) {
     return candidatePayload(request.params.id, true);
   });
 
+  app.patch("/api/admin/candidates/:id", async (request, reply) => {
+    requireAdmin(request, reply);
+    const candidateId = request.params.id;
+    const sequenceNo = Number(request.body?.sequenceNo);
+    const applicantNo = String(request.body?.applicantNo || "").trim();
+    const fullName = String(request.body?.fullName || "").trim();
+    const note = String(request.body?.note || "").trim();
+    if (!Number.isInteger(sequenceNo) || sequenceNo <= 0 || !/^\d+$/.test(applicantNo) || !fullName) {
+      reply.code(400);
+      return { ok: false, error: "กรุณาระบุลำดับ เลขประจำตัวสอบ และชื่อผู้สอบให้ถูกต้อง" };
+    }
+    const db = openDatabase();
+    const existing = db.prepare("SELECT * FROM candidates WHERE id=?").get(candidateId);
+    if (!existing) {
+      reply.code(404);
+      return { ok: false, error: "ไม่พบผู้เข้าสอบ" };
+    }
+    const duplicate = db
+      .prepare("SELECT id FROM candidates WHERE id<>? AND (sequence_no=? OR applicant_no=?)")
+      .get(candidateId, sequenceNo, applicantNo);
+    if (duplicate) {
+      reply.code(409);
+      return { ok: false, error: "ลำดับหรือเลขประจำตัวสอบซ้ำกับผู้เข้าสอบคนอื่น" };
+    }
+    db.prepare(
+      "UPDATE candidates SET sequence_no=?, applicant_no=?, full_name=?, note=?, updated_at=? WHERE id=?"
+    ).run(sequenceNo, applicantNo, fullName, note, new Date().toISOString(), candidateId);
+    ensureSubmission(candidateId);
+    logAudit("admin", "candidate_updated", { candidateId, sequenceNo, applicantNo, fullName });
+    broadcast();
+    return { ok: true, candidate: await candidatePayload(candidateId, true) };
+  });
+
   app.post("/api/admin/candidates/:id/confirm", async (request, reply) => {
     requireAdmin(request, reply);
     try {
@@ -290,8 +343,29 @@ export async function registerRoutes(app) {
     return { ok: true, ...result };
   });
 
+  app.post("/api/admin/reset-test-data", async (request, reply) => {
+    requireAdmin(request, reply);
+    const confirmText = String(request.body?.confirm || "").trim();
+    if (confirmText !== "CLEAR TEST DATA") {
+      reply.code(400);
+      return { ok: false, error: "ต้องยืนยันด้วยข้อความ CLEAR TEST DATA" };
+    }
+    const result = await clearTestData({
+      actor: "admin",
+      includeExports: request.body?.includeExports === true,
+      includeBackups: request.body?.includeBackups !== false,
+      preserveSessionToken: readBearer(request)
+    });
+    broadcast();
+    return result;
+  });
+
   app.post("/api/candidates/lookup", async (request, reply) => {
     const identifier = normalizeIdentifier(request.body?.identifier || "");
+    if (!/^\d+$/.test(identifier)) {
+      reply.code(400);
+      return { ok: false, error: "กรุณากรอกลำดับที่หรือเลขประจำตัวสอบ" };
+    }
     const db = openDatabase();
     const candidate = db
       .prepare("SELECT * FROM candidates WHERE applicant_no=? OR CAST(sequence_no AS TEXT)=?")
@@ -365,11 +439,12 @@ export async function registerRoutes(app) {
     }
     const kind = request.body?.kind === "original" ? "original" : "preview";
     const filePath = kind === "original" ? file.original_path : file.preview_path || file.original_path;
+    const previewIsMp4 = kind === "preview" && path.extname(filePath || "").toLowerCase() === ".mp4";
     const token = crypto.randomBytes(24).toString("base64url");
     fileAccessTokens.set(token, {
       filePath,
       fileName: file.original_name,
-      mime: kind === "preview" && file.detected_type?.startsWith("video/") ? "video/mp4" : file.detected_type,
+      mime: previewIsMp4 ? "video/mp4" : file.detected_type,
       expiresAt: Date.now() + 30 * 60 * 1000
     });
     logAudit(sessionActor(request), "file_link_created", {
@@ -460,6 +535,7 @@ async function candidatePayload(candidateId, includeName) {
     sequenceNo: candidate.sequence_no,
     applicantNo: candidate.applicant_no,
     fullName: includeName ? candidate.full_name : undefined,
+    note: includeName ? candidate.note : undefined,
     submission: {
       status: submission?.status || "not_started",
       progress: submission?.progress || 0,

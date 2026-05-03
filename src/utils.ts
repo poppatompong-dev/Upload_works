@@ -1,5 +1,53 @@
 import type { SubmissionFile, SubmissionStatus } from "./types";
 
+const videoExtensions = new Set([
+  ".3g2",
+  ".3gp",
+  ".3gpp",
+  ".asf",
+  ".avi",
+  ".divx",
+  ".dv",
+  ".f4v",
+  ".flv",
+  ".hevc",
+  ".m1v",
+  ".m2t",
+  ".m2ts",
+  ".m2v",
+  ".m4v",
+  ".mjpeg",
+  ".mjpg",
+  ".mkv",
+  ".mov",
+  ".mp4",
+  ".mpe",
+  ".mpeg",
+  ".mpg",
+  ".mts",
+  ".mxf",
+  ".ogm",
+  ".ogv",
+  ".qt",
+  ".rm",
+  ".rmvb",
+  ".tod",
+  ".ts",
+  ".vob",
+  ".webm",
+  ".wmv",
+  ".xvid"
+]);
+
+function fileExtension(name = "") {
+  const index = name.lastIndexOf(".");
+  return index >= 0 ? name.slice(index).toLowerCase() : "";
+}
+
+export function isKnownVideoFileName(name = "") {
+  return videoExtensions.has(fileExtension(name));
+}
+
 export function statusLabel(status: SubmissionStatus) {
   const map: Record<SubmissionStatus, string> = {
     not_started: "ยังไม่เริ่ม",
@@ -18,10 +66,13 @@ export function statusLabel(status: SubmissionStatus) {
 
 export function statusTone(status: SubmissionStatus) {
   if (status === "confirmed") return "ok";
-  if (status === "candidate_confirmed" || status === "admin_confirmed") return "info";
-  if (status === "ready_to_confirm" || status === "verifying") return "warn";
+  if (status === "candidate_confirmed") return "candidate";
+  if (status === "admin_confirmed") return "admin";
+  if (status === "ready_to_confirm") return "ready";
+  if (status === "verifying") return "verify";
   if (status === "needs_resubmit" || status === "expired") return "bad";
-  if (status === "uploading") return "info";
+  if (status === "admin_unlocked") return "unlock";
+  if (status === "uploading") return "upload";
   return "muted";
 }
 
@@ -45,7 +96,7 @@ export function formatBytes(bytes: number | null | undefined) {
 }
 
 export function fileCategory(file: File): "video" | "image" | "document" | "unsupported" {
-  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("video/") || isKnownVideoFileName(file.name)) return "video";
   if (file.type.startsWith("image/")) return "image";
   if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) return "document";
   return "unsupported";

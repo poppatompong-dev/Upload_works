@@ -22,6 +22,8 @@ export interface ExamSettings {
   announcement: string;
   publicUrl: string;
   publicUrlCustom: string;
+  wifiSsid: string;
+  wifiPassword: string;
   wifiQrAvailable: boolean;
 }
 
@@ -70,7 +72,8 @@ export interface CandidateDetail {
   id: string;
   sequenceNo: number;
   applicantNo: string;
-  fullName: string;
+  fullName?: string;
+  note?: string | null;
   submission: {
     status: SubmissionStatus;
     progress: number;
@@ -101,6 +104,11 @@ export interface PublicState {
     backupRoot: string;
     uploadWorksRoot: string;
   };
+}
+
+export interface SubmitState {
+  settings: ExamSettings;
+  timer: TimerState;
 }
 
 export interface AdminState extends Omit<PublicState, "systemUrlQr" | "candidates"> {

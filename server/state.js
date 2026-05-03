@@ -10,10 +10,21 @@ import { getFreeBytes } from "./fs-utils.js";
 
 export function localLanUrl() {
   const override = process.env.PUBLIC_URL || getSetting("publicUrl", "");
-  if (override) return override;
+  if (override) return submissionUrl(override);
   const address = preferredLanAddress(os.networkInterfaces());
-  if (address) return `http://${address}:${config.port}`;
-  return `http://localhost:${config.port}`;
+  if (address) return submissionUrl(`http://${address}:${config.port}`);
+  return submissionUrl(`http://localhost:${config.port}`);
+}
+
+function submissionUrl(value) {
+  try {
+    const url = new URL(value);
+    url.pathname = "/submit";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value;
+  }
 }
 
 export function preferredLanAddress(nets) {
@@ -56,6 +67,8 @@ function addressPenalty(address) {
 }
 
 export function settingsPayload() {
+  const autoPublicUrl = localLanUrl();
+  const customPublicUrl = getSetting("publicUrl", "");
   return {
     examTitle: getSetting("examTitle", config.exam.title),
     organization: getSetting("organization", config.exam.organization),
@@ -66,8 +79,10 @@ export function settingsPayload() {
     taskDescription: getSetting("taskDescription", config.exam.taskDescription),
     instructions: getSetting("instructions", config.exam.instructions),
     announcement: getSetting("announcement", ""),
-    publicUrl: localLanUrl(),
-    publicUrlCustom: getSetting("publicUrl", ""),
+    publicUrl: customPublicUrl || autoPublicUrl,
+    publicUrlCustom: customPublicUrl,
+    wifiSsid: getSetting("wifiSsid", "@Communication"),
+    wifiPassword: getSetting("wifiPassword", "VoIPvy,ibomiN"),
     wifiQrAvailable: getSetting("wifiQrPath", "") !== ""
   };
 }
@@ -155,6 +170,13 @@ export async function publicState() {
   };
 }
 
+export async function submitState() {
+  return {
+    settings: settingsPayload(),
+    timer: timerPayload()
+  };
+}
+
 export async function adminState() {
   const candidates = adminCandidateRows().map((row) => ({
     id: row.id,
@@ -190,13 +212,17 @@ export async function healthPayload() {
   const rosterCount = db.prepare("SELECT COUNT(*) AS count FROM candidates").get().count;
   let dbWritable = false;
   try {
-    db.prepare("SELECT 1").get();
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO settings (key,value,updated_at) VALUES ('__health_write_probe','ok',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+    ).run(now);
+    db.prepare("DELETE FROM settings WHERE key='__health_write_probe'").run();
     dbWritable = true;
   } catch {}
   let backupWritable = false;
   try {
-    await fs.promises.mkdir(paths.backupRoot, { recursive: true });
-    const probe = path.join(paths.backupRoot, ".write-probe");
+    await fs.promises.mkdir(config.backupRoot, { recursive: true });
+    const probe = path.join(config.backupRoot, ".write-probe");
     await fs.promises.writeFile(probe, "ok");
     await fs.promises.unlink(probe);
     backupWritable = true;

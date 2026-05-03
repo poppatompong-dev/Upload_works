@@ -1,4 +1,4 @@
-import type { AdminState, AuditLogEntry, AuditLogFilters, CandidateDetail, PublicState } from "./types";
+import type { AdminState, AuditLogEntry, AuditLogFilters, CandidateDetail, PublicState, SubmitState } from "./types";
 
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -30,6 +30,17 @@ async function requestJson<T>(url: string, options: RequestInit = {}): Promise<T
 
 export const api = {
   publicState: () => requestJson<PublicState>("/api/public/state"),
+  submitState: async () => {
+    try {
+      return await requestJson<SubmitState>("/api/public/submit-state");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        const state = await requestJson<PublicState>("/api/public/state");
+        return { settings: state.settings, timer: state.timer };
+      }
+      throw error;
+    }
+  },
   login: (password: string, role: "admin" | "readonly") =>
     requestJson<{ ok: true; token: string; role: string; expiresAt: string }>("/api/auth/login", {
       method: "POST",
@@ -42,6 +53,16 @@ export const api = {
   adminCandidate: (token: string, id: string) =>
     requestJson<CandidateDetail>(`/api/admin/candidates/${id}`, {
       headers: authHeader(token)
+    }),
+  updateCandidate: (
+    token: string,
+    id: string,
+    payload: { sequenceNo: number; applicantNo: string; fullName: string; note?: string }
+  ) =>
+    requestJson<{ ok: true; candidate: CandidateDetail }>(`/api/admin/candidates/${id}`, {
+      method: "PATCH",
+      headers: authHeader(token),
+      body: JSON.stringify(payload)
     }),
   auditLogs: (token: string, filters: AuditLogFilters = {}) => {
     const params = new URLSearchParams();
@@ -102,6 +123,17 @@ export const api = {
     requestJson<{ ok: true; jsonPath: string; csvPath: string }>("/api/admin/export", {
       method: "POST",
       headers: authHeader(token)
+    }),
+  clearTestData: (token: string) =>
+    requestJson<{
+      ok: true;
+      before: { files: number; submissions: number; sessions: number; auditLogs: number };
+      clearedDirs: Array<{ name: string; path: string }>;
+      preserved: string[];
+    }>("/api/admin/reset-test-data", {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ confirm: "CLEAR TEST DATA" })
     }),
   lookupCandidate: (identifier: string) =>
     requestJson<{ ok: true; token: string; candidate: CandidateDetail }>("/api/candidates/lookup", {

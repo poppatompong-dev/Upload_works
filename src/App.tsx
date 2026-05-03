@@ -1,22 +1,22 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  ArrowDownUp,
-  ArrowLeftRight,
   Activity,
+  ArrowLeft,
+  Bell,
   CheckCircle2,
   Clock,
   Download,
+  ExternalLink,
   Eye,
   FileCheck2,
   FileVideo,
-  Home,
-  LayoutGrid,
   ListFilter,
   Lock,
   LogOut,
   Monitor,
   Play,
+  Printer,
   QrCode,
   RefreshCw,
   RotateCcw,
@@ -24,7 +24,7 @@ import {
   Search,
   ShieldCheck,
   Square,
-  Table2,
+  Trash2,
   Upload,
   UsersRound,
   Wifi
@@ -38,6 +38,7 @@ import type {
   CandidateDetail,
   CandidateSummary,
   PublicState,
+  SubmitState,
   SubmissionFile
 } from "./types";
 import {
@@ -57,9 +58,37 @@ const candidateTokenKey = "exam:candidateToken";
 const candidateIdKey = "exam:candidateId";
 const adminTokenKey = "exam:adminToken";
 const adminRoleKey = "exam:adminRole";
+const googleDriveFallbackUrl = "https://drive.google.com/drive/folders/1QZ7WYaTd6OiXOzMcfsnxSnQnmSUPl-UT?usp=sharing";
+const timerMilestones = {
+  thirtyMinutes: 30 * 60,
+  fortyFiveMinutes: 45 * 60,
+  fiveMinutesLeft: 5 * 60
+};
 
 type TimerLike = PublicState["timer"] | AdminState["timer"] | null | undefined;
 type ProjectorView = "grid" | "table" | "cards" | "vertical" | "horizontal";
+type ProjectorMonitorMode = "grid" | "ticker";
+type AdminSection = "overview" | "candidates" | "settings" | "reports";
+
+function clearStoredCandidateIdentity() {
+  localStorage.removeItem(candidateTokenKey);
+  localStorage.removeItem(candidateIdKey);
+}
+
+function initialCandidateSession() {
+  if (window.location.pathname === "/submit") {
+    clearStoredCandidateIdentity();
+    return { token: "", candidateId: "" };
+  }
+  return {
+    token: localStorage.getItem(candidateTokenKey) || "",
+    candidateId: localStorage.getItem(candidateIdKey) || ""
+  };
+}
+
+function initialCandidateIdentifier() {
+  return new URLSearchParams(window.location.search).get("candidate") || "";
+}
 
 function getCountdownSeconds(timer: TimerLike) {
   if (!timer) return 0;
@@ -86,12 +115,47 @@ function useCountdownSeconds(timer: TimerLike) {
   return remainingSeconds;
 }
 
+function elapsedSecondsForTimer(timer: TimerLike, remainingSeconds: number) {
+  if (!timer) return 0;
+  if (timer.state === "running" && timer.startAt) {
+    return Math.max(0, Math.floor((Date.now() - new Date(timer.startAt).getTime()) / 1000));
+  }
+  const total = Math.max(0, (timer.durationSeconds || 0) + (timer.extendedSeconds || 0));
+  return Math.max(0, total - remainingSeconds);
+}
+
+function timerNotice(timer: TimerLike, remainingSeconds: number) {
+  if (!timer) return null;
+  const ended = timer.state === "ended" || (timer.state === "running" && remainingSeconds <= 0);
+  if (ended) {
+    return {
+      tone: "bad",
+      title: "หมดเวลาสอบแล้ว",
+      detail: "ระบบปิดรับงานตามเวลาสอบ ทุกหน้าจะแสดงสถานะหมดเวลาให้ผู้เข้าสอบและกรรมการเห็นตรงกัน"
+    };
+  }
+  if (timer.state !== "running") return null;
+  const elapsed = elapsedSecondsForTimer(timer, remainingSeconds);
+  if (remainingSeconds <= timerMilestones.fiveMinutesLeft) {
+    return { tone: "bad", title: "เหลือเวลาอีก 5 นาที", detail: "กรุณาเร่งตรวจไฟล์และยืนยันการส่งงานให้เรียบร้อย" };
+  }
+  if (elapsed >= timerMilestones.fortyFiveMinutes) {
+    return { tone: "warning", title: "เวลาสอบผ่านไป 45 นาที", detail: "ช่วงท้ายของการสอบเริ่มใกล้เข้ามาแล้ว" };
+  }
+  if (elapsed >= timerMilestones.thirtyMinutes) {
+    return { tone: "info", title: "เวลาสอบผ่านไป 30 นาที", detail: "ระบบแจ้งเตือนครึ่งทางของการสอบปฏิบัติ" };
+  }
+  return null;
+}
+
 export function App() {
   const path = window.location.pathname;
+  if (path.startsWith("/admin/logs")) return <AdminLogsPage />;
   if (path.startsWith("/admin")) return <AdminPage />;
   if (path.startsWith("/projector")) return <ProjectorPage />;
+  if (path.startsWith("/portal")) return <PortalPage />;
   if (path.startsWith("/submit") || path.startsWith("/candidate")) return <CandidatePage />;
-  if (path === "/" || path === "") return <PortalPage />;
+  if (path === "/" || path === "") return <CandidatePage />;
   return <CandidatePage />;
 }
 
@@ -110,6 +174,7 @@ function PortalPage() {
   return (
     <main className="app-shell portal-shell">
       <section className="portal-hero">
+        <img className="brand-logo hero-brand-logo" src="/municipality-logo.png" alt="โลโก้เทศบาลนครนครสวรรค์" />
         <div>
           <p className="system-name">{state?.settings.organization || "เทศบาลนครนครสวรรค์"}</p>
           <h1>ระบบส่งผลงานสอบปฏิบัติ</h1>
@@ -117,6 +182,7 @@ function PortalPage() {
         </div>
         <TimerPill timer={state?.timer} />
       </section>
+      <TimerNotice timer={state?.timer} />
 
       <section className="portal-grid">
         <a className="portal-card primary" href="/submit">
@@ -146,6 +212,15 @@ function PortalPage() {
             <p>แสดง QR, countdown และสถานะส่งงาน</p>
           </div>
         </a>
+        <a className="portal-card backup" href={googleDriveFallbackUrl} target="_blank" rel="noreferrer">
+          <div className="card-icon-box">
+            <ExternalLink size={28} />
+          </div>
+          <div>
+            <h2>ช่องทางส่งงานสำรอง</h2>
+            <p>เปิด Google Drive สำหรับกรณีระบบหลักมีปัญหาและกรรมการแจ้งให้ใช้ช่องทางสำรอง</p>
+          </div>
+        </a>
       </section>
 
       <section className="panel portal-status">
@@ -163,11 +238,12 @@ function PortalPage() {
 }
 
 function CandidatePage() {
-  const [identifier, setIdentifier] = useState("");
-  const [token, setToken] = useState(() => localStorage.getItem(candidateTokenKey) || "");
-  const [candidateId, setCandidateId] = useState(() => localStorage.getItem(candidateIdKey) || "");
+  const [identifier, setIdentifier] = useState(() => initialCandidateIdentifier());
+  const [initialSession] = useState(() => initialCandidateSession());
+  const [token, setToken] = useState(initialSession.token);
+  const [candidateId, setCandidateId] = useState(initialSession.candidateId);
   const [candidate, setCandidate] = useState<CandidateDetail | null>(null);
-  const [publicState, setPublicState] = useState<PublicState | null>(null);
+  const [publicState, setPublicState] = useState<SubmitState | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -178,7 +254,7 @@ function CandidatePage() {
 
   const refresh = useCallback(async () => {
     const [pub, detail] = await Promise.all([
-      api.publicState(),
+      api.submitState(),
       token && candidateId ? api.candidate(token, candidateId).catch(() => null) : Promise.resolve(null)
     ]);
     setPublicState(pub);
@@ -187,6 +263,8 @@ function CandidatePage() {
 
   useEffect(() => {
     refresh().catch(() => undefined);
+    const id = window.setInterval(() => refresh().catch(() => undefined), 2000);
+    return () => window.clearInterval(id);
   }, [refresh]);
   useRealtime(() => refresh().catch(() => undefined));
 
@@ -208,11 +286,11 @@ function CandidatePage() {
   }
 
   function resetIdentity() {
-    localStorage.removeItem(candidateTokenKey);
-    localStorage.removeItem(candidateIdKey);
+    clearStoredCandidateIdentity();
     setToken("");
     setCandidateId("");
     setCandidate(null);
+    setIdentifier("");
     setPreview(null);
     setPreviewConfirmed(false);
   }
@@ -302,6 +380,47 @@ function CandidatePage() {
     }
   }
 
+  function downloadProofImage() {
+    if (!candidate?.submission.candidateConfirmedAt) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = 1200;
+    canvas.height = 820;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "#f0fdf4";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    roundRect(ctx, 54, 54, 1092, 712, 28);
+    ctx.fill();
+    ctx.strokeStyle = "#16a34a";
+    ctx.lineWidth = 8;
+    ctx.stroke();
+    ctx.fillStyle = "#15803d";
+    ctx.font = "bold 44px Prompt, Sarabun, sans-serif";
+    ctx.fillText("หลักฐานการยืนยันส่งผลงาน", 96, 140);
+    ctx.fillStyle = "#14213d";
+    ctx.font = "bold 78px Prompt, Sarabun, sans-serif";
+    ctx.fillText(String(candidate.sequenceNo).padStart(2, "0"), 96, 250);
+    ctx.font = "bold 36px Prompt, Sarabun, sans-serif";
+    ctx.fillText(`ผู้เข้าสอบลำดับที่ ${candidate.sequenceNo}`, 230, 230);
+    ctx.fillStyle = "#475569";
+    ctx.font = "28px Prompt, Sarabun, sans-serif";
+    ctx.fillText(`เลขประจำตัวสอบ: ${candidate.applicantNo}`, 230, 282);
+    ctx.fillText(`ชื่อ - นามสกุล: ${candidate.fullName || "-"}`, 230, 334);
+    ctx.fillText(`ยืนยันเมื่อ: ${displayDateTime(candidate.submission.candidateConfirmedAt)}`, 96, 432);
+    ctx.fillText(`จำนวนไฟล์ที่ตรวจผ่าน: ${verifiedFiles.length} ไฟล์`, 96, 486);
+    ctx.fillStyle = "#16a34a";
+    ctx.font = "bold 34px Prompt, Sarabun, sans-serif";
+    ctx.fillText("สถานะ: ยืนยันการส่งงานแล้ว", 96, 572);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "22px Prompt, Sarabun, sans-serif";
+    ctx.fillText(publicState?.settings.organization || "ระบบส่งผลงานสอบปฏิบัติ", 96, 690);
+    const link = document.createElement("a");
+    link.download = `submission-proof-${candidate.applicantNo}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+  }
+
   const timer = publicState?.timer;
   const remainingSeconds = useCountdownSeconds(timer);
   const canUpload = timer?.state === "running" && remainingSeconds > 0;
@@ -317,6 +436,7 @@ function CandidatePage() {
   return (
     <main className="app-shell candidate-shell">
       <section className="candidate-hero">
+        <img className="brand-logo hero-brand-logo" src="/municipality-logo.png" alt="โลโก้เทศบาลนครนครสวรรค์" />
         <div>
           <p className="system-name">{publicState?.settings.organization || "เทศบาลนครนครสวรรค์"}</p>
           <h1>ระบบส่งผลงานสอบปฏิบัติ</h1>
@@ -324,6 +444,7 @@ function CandidatePage() {
         </div>
         <TimerPill timer={timer} />
       </section>
+      <TimerNotice timer={timer} />
 
       {publicState?.settings.announcement ? (
         <div className="notice info">
@@ -337,17 +458,23 @@ function CandidatePage() {
           <div className="login-icon-wrap">
             <ShieldCheck size={32} />
           </div>
-          <h2>ยืนยันตัวผู้เข้าสอบ</h2>
-          <p>กรอกลำดับที่หรือเลขประจำตัวผู้สมัคร ระบบจะแสดงชื่อให้ตรวจทานก่อนส่งไฟล์</p>
+          <div className="candidate-select-copy">
+            <h2>ยืนยันตัวผู้เข้าสอบ</h2>
+            <p>สแกน QR แล้วระบบจะเริ่มใหม่ทุกครั้ง กรุณากรอกลำดับที่หรือเลขประจำตัวสอบตามบัตรของท่าน</p>
+          </div>
           <ol className="login-steps">
             <li><span>1</span>กรอกเลขผู้สมัครหรือลำดับที่</li>
-            <li><span>2</span>ตรวจสอบชื่อ-สกุลให้ถูกต้อง</li>
+            <li><span>2</span>ตรวจสอบเลขลำดับและเลขประจำตัวสอบให้ถูกต้อง</li>
             <li><span>3</span>เลือกไฟล์วิดีโอและอัปโหลด</li>
           </ol>
-          <div className="inline-form">
+          <div className="candidate-select-form">
             <input
+              type="text"
               value={identifier}
-              onChange={(event) => setIdentifier(event.target.value)}
+              onChange={(event) => {
+                setIdentifier(event.target.value);
+                setError("");
+              }}
               placeholder="เช่น 1 หรือ 07101001"
               inputMode="numeric"
               onKeyDown={(event) => {
@@ -367,7 +494,7 @@ function CandidatePage() {
             <div className="panel-heading">
               <div>
                 <h2>ข้อมูลผู้เข้าสอบ</h2>
-                <p>ตรวจสอบให้ตรงกับบัตรประจำตัวก่อนอัปโหลด</p>
+                <p>ตรวจสอบเลขลำดับและเลขประจำตัวสอบให้ตรงกับบัตรก่อนอัปโหลด</p>
               </div>
               <button className="ghost" onClick={resetIdentity}>
                 <LogOut size={16} />
@@ -379,10 +506,10 @@ function CandidatePage() {
               <strong>{candidate.sequenceNo}</strong>
               <span>เลขสมัคร</span>
               <strong>{candidate.applicantNo}</strong>
-              <span>ชื่อ - สกุล</span>
-              <strong>{candidate.fullName}</strong>
+              <span>ชื่อ - นามสกุล</span>
+              <strong>{candidate.fullName || "-"}</strong>
               <span>สถานะ</span>
-              <StatusBadge status={status} progress={candidate.submission.progress || localProgress} />
+              <CandidateStatusBadge status={status} progress={candidate.submission.progress || localProgress} />
             </div>
           </div>
 
@@ -399,7 +526,7 @@ function CandidatePage() {
                 className="file-input"
                 type="file"
                 multiple
-                accept="video/*,image/*,application/pdf"
+                accept="video/*,.3g2,.3gp,.3gpp,.asf,.avi,.divx,.dv,.f4v,.flv,.hevc,.m1v,.m2t,.m2ts,.m2v,.m4v,.mjpeg,.mjpg,.mkv,.mov,.mp4,.mpe,.mpeg,.mpg,.mts,.mxf,.ogm,.ogv,.qt,.rm,.rmvb,.tod,.ts,.vob,.webm,.wmv,.xvid,image/*,application/pdf"
                 disabled={!canUpload || busy || candidateConfirmed}
                 onChange={(event) => setSelectedFiles(Array.from(event.target.files || []))}
               />
@@ -421,6 +548,7 @@ function CandidatePage() {
               อัปโหลดผลงาน
             </button>
             {!canUpload ? <p className="form-error">ระบบยังไม่เปิดรับหรือหมดเวลาส่งงานแล้ว</p> : null}
+            <BackupSubmissionLink />
             {message ? <p className="form-ok">{message}</p> : null}
             {error ? <p className="form-error">{error}</p> : null}
           </div>
@@ -429,14 +557,11 @@ function CandidatePage() {
             <div className="panel-heading">
               <div>
                 <h2>ตรวจดูและยืนยัน</h2>
-                <p>ผู้ส่งและกรรมการเปิดดูและรับรองได้แยกกัน ระบบจะแสดงสถานะให้ทุกฝ่ายเห็นทันที</p>
+                <p>เปิดดูไฟล์ตัวอย่างให้ครบ แล้วกดยืนยันเมื่อแน่ใจว่าไฟล์ถูกต้อง</p>
               </div>
               <FileCheck2 size={28} />
             </div>
-            <ReviewStatus
-              candidateConfirmedAt={candidate.submission.candidateConfirmedAt}
-              adminConfirmedAt={candidate.submission.adminConfirmedAt}
-            />
+            <CandidateReviewStatus confirmedAt={candidate.submission.candidateConfirmedAt} />
             <SubmissionFiles files={verifiedFiles} onPreview={openPreview} />
             {preview ? <PreviewBox preview={preview} /> : null}
             {canCandidateConfirm ? (
@@ -458,7 +583,7 @@ function CandidatePage() {
               รับรองว่าเปิดดูได้ถูกต้อง
             </button>
             {candidateConfirmed ? (
-              <ConfirmationCard confirmedAt={candidate.submission.candidateConfirmedAt} />
+              <ConfirmationCard confirmedAt={candidate.submission.candidateConfirmedAt} onDownload={downloadProofImage} />
             ) : null}
             {candidate.submission.errorMessage ? (
               <p className="form-error">{candidate.submission.errorMessage}</p>
@@ -483,20 +608,18 @@ function AdminPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<{ file: SubmissionFile; url: string } | null>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [auditFilters, setAuditFilters] = useState<AuditLogFilters>({ limit: 100 });
+  const [adminSection, setAdminSection] = useState<AdminSection>("overview");
 
   const isReadOnly = role === "readonly";
 
   const refresh = useCallback(async () => {
     if (!token) return;
-    const [next, logResult] = await Promise.all([api.adminState(token), api.auditLogs(token, auditFilters)]);
+    const next = await api.adminState(token);
     setState(next);
-    setAuditLogs(logResult.logs);
     if (selectedId) {
       setDetail(await api.adminCandidate(token, selectedId));
     }
-  }, [token, selectedId, auditFilters]);
+  }, [token, selectedId]);
 
   const refreshPublic = useCallback(async () => {
     setPublicState(await api.publicState());
@@ -546,9 +669,19 @@ function AdminPage() {
   }
 
   async function selectCandidate(row: CandidateSummary) {
+    setError("");
+    setMessage("");
     setSelectedId(row.id);
     setDetail(await api.adminCandidate(token, row.id));
     setPreview(null);
+  }
+
+  function clearSelectedCandidate() {
+    setSelectedId("");
+    setDetail(null);
+    setPreview(null);
+    setError("");
+    setMessage("");
   }
 
   async function openPreview(file: SubmissionFile) {
@@ -559,6 +692,13 @@ function AdminPage() {
   async function adminConfirm() {
     if (!detail) return;
     await runAction(() => api.adminConfirm(token, detail.id), "กรรมการรับรองว่าเปิดดูได้ถูกต้องแล้ว");
+  }
+
+  async function updateCandidate(id: string, payload: { sequenceNo: number; applicantNo: string; fullName: string; note?: string }) {
+    await runAction(async () => {
+      const result = await api.updateCandidate(token, id, payload);
+      setDetail(result.candidate);
+    }, "บันทึกรายละเอียดผู้เข้าสอบแล้ว");
   }
 
   async function startPracticalExam() {
@@ -583,10 +723,54 @@ function AdminPage() {
     }
   }
 
+  async function clearTestData() {
+    const ok = window.confirm(
+      "ล้างข้อมูลทดสอบทั้งหมดหรือไม่ ระบบจะลบไฟล์ upload, temp, export, backup และ reset สถานะผู้เข้าสอบ แต่จะเก็บรายชื่อผู้เข้าสอบกับ settings ไว้"
+    );
+    if (!ok) return;
+    const confirmText = window.prompt("พิมพ์ CLEAR TEST DATA เพื่อยืนยันการล้างข้อมูลทดสอบ");
+    if (confirmText !== "CLEAR TEST DATA") return;
+    await runAction(
+      async () => {
+        await api.clearTestData(token);
+        setSelectedId("");
+        setDetail(null);
+        setPreview(null);
+      },
+      "ล้างข้อมูลทดสอบและโฟลเดอร์ upload เรียบร้อยแล้ว"
+    );
+  }
+
+  const reviewRows = useMemo(() => {
+    const priority: Record<string, number> = {
+      candidate_confirmed: 0,
+      ready_to_confirm: 1,
+      verifying: 2,
+      uploading: 3,
+      needs_resubmit: 4
+    };
+    return [...(state?.candidates || [])]
+      .filter((row) =>
+        ["candidate_confirmed", "ready_to_confirm", "verifying", "uploading", "needs_resubmit"].includes(row.status)
+      )
+      .sort((a, b) => (priority[a.status] ?? 9) - (priority[b.status] ?? 9) || a.sequenceNo - b.sequenceNo)
+      .slice(0, 12);
+  }, [state?.candidates]);
+
+  useEffect(() => {
+    if (!token) return;
+    const originalTitle = "Exam Control";
+    document.title = reviewRows.length ? `(${reviewRows.length}) งานรอดำเนินการ - ${originalTitle}` : originalTitle;
+    return () => {
+      document.title = originalTitle;
+    };
+  }, [reviewRows.length, token]);
+
   if (!token) {
     return (
       <main className="app-shell admin-login">
         <TimerPill timer={publicState?.timer} />
+        <TimerNotice timer={publicState?.timer} />
         <section className="panel login-panel">
           <div className="login-icon-wrap admin-icon-wrap">
             <Lock size={32} />
@@ -624,41 +808,41 @@ function AdminPage() {
           <p>{state?.settings.position || "ผู้ช่วยนักประชาสัมพันธ์"}</p>
         </div>
         <TimerPill timer={state?.timer} />
-        <button className="ghost" onClick={logout}>
+        <nav className="admin-nav" aria-label="Admin navigation">
+          {[
+            ["overview", "ภาพรวม"],
+            ["candidates", "ผู้เข้าสอบ"],
+            ["settings", "ตั้งค่า"],
+            ["reports", "รายงาน"]
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              className={adminSection === key ? "active" : ""}
+              onClick={() => setAdminSection(key as AdminSection)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+          <a href="/admin/logs">Logs</a>
+        </nav>
+        <button className="ghost" onClick={logout} title="ออกจากระบบ">
           <LogOut size={16} />
           ออกจากระบบ
         </button>
       </aside>
 
       <section className="admin-main">
-        <div className="admin-toolbar">
-          <StatCards stats={state?.stats} />
-          <div className="toolbar-actions">
-            <TimerControlPanel
-              timer={state?.timer}
-              isReadOnly={isReadOnly}
-              onStart={startPracticalExam}
-              onStop={stopPracticalExam}
-              onRestart={restartPracticalExam}
-            />
-            <button
-              disabled={isReadOnly}
-              onClick={() => {
-                const reason = window.prompt("เหตุผลการขยายเวลา");
-                if (reason) runAction(() => api.extendTimer(token, 300, reason), "ขยายเวลา 5 นาทีแล้ว");
-              }}
-            >
-              <Clock size={16} />
-              +5 นาที
-            </button>
-            <button disabled={isReadOnly} onClick={() => runAction(() => api.exportManifest(token), "export สำเร็จ")}>
-              <Download size={16} />
-              Export
-            </button>
-            <a className="button-link ghost-link" href="/" target="_blank" rel="noreferrer">
-              <Home size={16} />
-              Portal
-            </a>
+        <section className="admin-hero">
+          <div className="admin-hero-copy">
+            <img className="brand-logo admin-hero-logo" src="/municipality-logo.png" alt="โลโก้เทศบาลนครนครสวรรค์" />
+            <div>
+              <h1>ห้องควบคุมการสอบปฏิบัติ</h1>
+              <p>{state?.settings.examTitle || "ระบบส่งผลงานสอบปฏิบัติ"} • {state?.settings.location || "เทศบาลนครนครสวรรค์"}</p>
+              <small>เครดิต นักวิชาการคอมพิวเตอร์ กลุ่มงานสถิติและสารสนเทศ เทศบาลนครนครสวรรค์</small>
+            </div>
+          </div>
+          <div className="admin-hero-actions">
             <a className="button-link ghost-link" href="/submit" target="_blank" rel="noreferrer">
               <Upload size={16} />
               ส่งงาน
@@ -668,6 +852,25 @@ function AdminPage() {
               Projector
             </a>
           </div>
+        </section>
+
+        <AdminControlBar
+          timer={state?.timer}
+          isReadOnly={isReadOnly}
+          onStart={startPracticalExam}
+          onStop={stopPracticalExam}
+          onRestart={restartPracticalExam}
+          onExtend={() => {
+            const reason = window.prompt("เหตุผลการขยายเวลา");
+            if (reason) runAction(() => api.extendTimer(token, 300, reason), "ขยายเวลา 5 นาทีแล้ว");
+          }}
+          onExport={() => runAction(() => api.exportManifest(token), "export สำเร็จ")}
+          onClear={clearTestData}
+        />
+        <TimerNotice timer={state?.timer} />
+        <div className="sweet-alert-hint" title="คำแนะนำ: เลือกผู้สอบจากตารางเพื่อดูไฟล์ แก้ไขชื่อ หรือรับรองงาน">
+          <AlertTriangle size={18} />
+          <span>Hint: เลือกผู้สอบจากตารางเพื่อดูรายละเอียด แก้ไขข้อมูล และรับรองไฟล์ที่ตรวจผ่าน</span>
         </div>
 
         {state?.system.warnings.length ? (
@@ -679,60 +882,129 @@ function AdminPage() {
         {message ? <div className="notice ok">{message}</div> : null}
         {error ? <div className="notice bad">{error}</div> : null}
 
-        <div className="admin-grid">
-          <section className="panel table-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>สถานะผู้เข้าสอบทั้งหมด</h2>
-                <p>ข้อมูลชื่อเต็มแสดงเฉพาะหน้ากรรมการ</p>
-              </div>
-              <RefreshCw size={22} onClick={() => refresh()} />
+        <section className="admin-spa-view">
+          {adminSection === "overview" ? (
+            <>
+              <StatCards stats={state?.stats} />
+              <AdminActionQueue rows={state?.candidates || []} onSelect={selectCandidate} />
+            </>
+          ) : null}
+
+          {adminSection === "candidates" ? (
+            <div className="admin-grid">
+              <section className="panel table-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>สถานะผู้เข้าสอบทั้งหมด</h2>
+                    <p>ข้อมูลชื่อเต็มแสดงเฉพาะหน้ากรรมการ</p>
+                  </div>
+                  <RefreshCw size={22} onClick={() => refresh()} />
+                </div>
+                <CandidateTable rows={state?.candidates || []} onSelect={selectCandidate} />
+              </section>
+
+              <section className="panel inspector-panel">
+                <AdminInspector
+                  token={token}
+                  detail={detail}
+                  preview={preview}
+                  isReadOnly={isReadOnly}
+                  onPreview={openPreview}
+                  onUnlock={(reason) =>
+                    detail
+                      ? runAction(() => api.unlockCandidate(token, detail.id, reason), "เปิดสิทธิ์ส่งใหม่แล้ว")
+                      : Promise.resolve()
+                  }
+                  onAdminConfirm={adminConfirm}
+                  onSaveCandidate={updateCandidate}
+                  onBack={clearSelectedCandidate}
+                />
+              </section>
             </div>
-            <CandidateTable rows={state?.candidates || []} onSelect={selectCandidate} />
-          </section>
+          ) : null}
 
-          <section className="panel inspector-panel">
-            <AdminInspector
+          {adminSection === "settings" ? (
+            <AdminSettingsPanel
               token={token}
-              detail={detail}
-              preview={preview}
+              state={state}
               isReadOnly={isReadOnly}
-              onPreview={openPreview}
-              onUnlock={(reason) =>
-                detail
-                  ? runAction(() => api.unlockCandidate(token, detail.id, reason), "เปิดสิทธิ์ส่งใหม่แล้ว")
-                  : Promise.resolve()
-              }
-              onAdminConfirm={adminConfirm}
+              onDone={() => runAction(() => Promise.resolve(), "อัปเดตข้อมูลและ Gen QR code ใหม่แล้ว")}
+              onError={setError}
             />
-          </section>
-        </div>
+          ) : null}
 
-        <AdminSettingsPanel
-          token={token}
-          state={state}
-          isReadOnly={isReadOnly}
-          onDone={() => refresh()}
-          onError={setError}
-        />
-        <AuditLogsPanel
-          logs={auditLogs}
-          filters={auditFilters}
-          candidates={state?.candidates || []}
-          onFiltersChange={setAuditFilters}
-          onRefresh={() => refresh()}
-        />
+          {adminSection === "reports" ? (
+            <AdminReportPanel candidates={state?.candidates || []} timer={state?.timer} settings={state?.settings} />
+          ) : null}
+        </section>
+
       </section>
+    </main>
+  );
+}
+
+function AdminLogsPage() {
+  const [token] = useState(() => localStorage.getItem(adminTokenKey) || "");
+  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [candidates, setCandidates] = useState<CandidateSummary[]>([]);
+  const [filters, setFilters] = useState<AuditLogFilters>({ limit: 250 });
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    if (!token) return;
+    const [state, logResult] = await Promise.all([api.adminState(token), api.auditLogs(token, filters)]);
+    setCandidates(state.candidates);
+    setLogs(logResult.logs);
+  }, [token, filters]);
+
+  useEffect(() => {
+    refresh().catch((err) => setError(errorText(err)));
+  }, [refresh]);
+
+  if (!token) {
+    return (
+      <main className="app-shell admin-login">
+        <section className="panel login-panel">
+          <div className="login-icon-wrap admin-icon-wrap">
+            <Lock size={32} />
+          </div>
+          <h1>Activity Logs</h1>
+          <p>กรุณาเข้าสู่ระบบแอดมินก่อนเปิดหน้าบันทึกกิจกรรม</p>
+          <a className="button-link" href="/admin">
+            <Lock size={18} />
+            เข้าสู่ระบบแอดมิน
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell admin-logs-page">
+      <div className="log-page-nav">
+        <a className="button-link ghost-link" href="/admin">
+          <Monitor size={16} />
+          กลับหน้าแอดมิน
+        </a>
+      </div>
+      {error ? <div className="notice bad">{error}</div> : null}
+      <AuditLogsPanel
+        logs={logs}
+        filters={filters}
+        candidates={candidates}
+        onFiltersChange={setFilters}
+        onRefresh={() => refresh()}
+      />
     </main>
   );
 }
 
 function ProjectorPage() {
   const [state, setState] = useState<PublicState | null>(null);
-  const [view, setView] = useState<ProjectorView>(() => {
-    const value = new URLSearchParams(window.location.search).get("view");
-    return isProjectorView(value) ? value : "grid";
-  });
+  const [fallbackOpen, setFallbackOpen] = useState(false);
+  const [monitorMode, setMonitorMode] = useState<ProjectorMonitorMode>(() =>
+    new URLSearchParams(window.location.search).get("view") === "ticker" ? "ticker" : "grid"
+  );
 
   const refresh = useCallback(async () => {
     setState(await api.publicState());
@@ -748,7 +1020,7 @@ function ProjectorPage() {
   const settings = state?.settings;
   const rows = state?.candidates || [];
   const remainingSeconds = useCountdownSeconds(state?.timer);
-  const submittedCount = useMemo(
+  const confirmedCount = useMemo(
     () => rows.filter((row) => ["candidate_confirmed", "admin_confirmed", "confirmed"].includes(row.status)).length,
     [rows]
   );
@@ -756,90 +1028,343 @@ function ProjectorPage() {
     () => rows.filter((row) => ["uploading", "verifying", "ready_to_confirm"].includes(row.status)).length,
     [rows]
   );
-
-  function changeView(nextView: ProjectorView) {
-    setView(nextView);
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", nextView);
-    window.history.replaceState(null, "", url);
-  }
+  const confirmedPct = rows.length ? Math.round((confirmedCount / rows.length) * 100) : 0;
+  const readyCount = state?.stats?.ready_to_confirm || 0;
+  const unconfirmedCount = Math.max(0, rows.length - confirmedCount);
+  const candidateConfirmedCount = rows.filter((row) => Boolean(row.candidateConfirmedAt || row.status === "candidate_confirmed" || row.status === "confirmed")).length;
+  const adminConfirmedCount = rows.filter((row) => Boolean(row.adminConfirmedAt || row.status === "admin_confirmed" || row.status === "confirmed")).length;
+  const projectorTimerNotice = timerNotice(state?.timer, remainingSeconds);
 
   return (
     <main className="projector">
       <header className="projector-header">
-        <div>
+        <div className="projector-title-group">
+          <img className="brand-logo projector-brand-logo" src="/municipality-logo.png" alt="โลโก้เทศบาลนครนครสวรรค์" />
+          <div className="projector-title-mark" aria-hidden="true" />
+          <div>
           <h1>{settings?.examTitle || "ระบบส่งผลงานสอบปฏิบัติ"}</h1>
           <p>
             {settings?.organization} • {settings?.location}
           </p>
+          </div>
         </div>
-        <div className="projector-clock">
-          <span>เวลาคงเหลือ</span>
+        <div className={`projector-clock ${projectorTimerNotice?.tone === "bad" ? "ended" : ""}`}>
+          <span>{projectorTimerNotice?.title || "เวลาคงเหลือ"}</span>
           <strong>{formatSeconds(remainingSeconds)}</strong>
         </div>
+        <nav className="projector-nav" aria-label="Projector navigation">
+          <a href="/projector" title="แดชบอร์ดภาพรวมสำหรับจอหลัก">Dashboard</a>
+          <a href="/projector?view=ticker" title="เปิดอักษรวิ่งสองแถว">Ticker</a>
+          <a href="/submit" title="เปิดหน้าส่งผลงาน">Submit</a>
+          <a href="/admin" title="กลับไปหน้าควบคุมแอดมิน">Admin</a>
+        </nav>
       </header>
-
       <section className="projector-body">
-        <div className="projector-info">
-          <div className="projector-instructions">
-            <h2>คำชี้แจง</h2>
-            <p>{settings?.taskDescription}</p>
-            <p>{settings?.instructions}</p>
-            <p>{settings?.announcement}</p>
-          </div>
+        <div className="projector-info" aria-label="ภาพรวมสถานะระบบส่งผลงาน">
+          <ProjectorInsightsPanel rows={rows} timer={state?.timer} remainingSeconds={remainingSeconds} />
+          <ProjectorConfirmationPanel
+            confirmedCount={confirmedCount}
+            confirmedPct={confirmedPct}
+            readyCount={readyCount}
+            unconfirmedCount={unconfirmedCount}
+            candidateConfirmedCount={candidateConfirmedCount}
+            adminConfirmedCount={adminConfirmedCount}
+          />
+          <ProjectorLegend />
         </div>
 
-        <div className="projector-progress">
-          <div className="qr-row">
-            <div>
-              <div className="qr-header">
-                <QrCode size={20} />
-                <h2>เข้าเว็บส่งผลงาน</h2>
-              </div>
-              {state?.systemUrlQr ? (
-                <div className="qr-focal-wrap">
-                  <img src={state.systemUrlQr} alt="QR URL ระบบส่งผลงาน" />
-                </div>
-              ) : null}
-              <p>{settings?.publicUrl}</p>
-            </div>
-          </div>
+        <div className="projector-progress" aria-label="สถานะการส่งผลงานของผู้เข้าสอบ">
           <div className="projector-progress-head">
             <div>
-              <h2>ความคืบหน้าการส่งผลงาน realtime</h2>
-              <p>
-                {submittedCount}/{rows.length} คนส่งแล้ว • {activeCount} คนกำลังดำเนินการ
+              <h2>ติดตามการส่งผลงานแบบเรียลไทม์</h2>
+              <p className="projector-live-summary">
+                ผู้สอบยืนยัน {candidateConfirmedCount}/{rows.length} • กรรมการรับรอง {adminConfirmedCount}/{rows.length} • กำลังดำเนินการ {activeCount}
+              </p>
+              <p className="projector-old-summary">
+                {confirmedCount}/{rows.length} confirmed • {activeCount} active • {unconfirmedCount} remaining
               </p>
             </div>
-            <div className="projector-view-switch" aria-label="เลือกมุมมองสำหรับโปรเจคเตอร์">
-              <button className={view === "grid" ? "active" : ""} onClick={() => changeView("grid")} title="Grid">
-                <LayoutGrid size={18} />
-                <span>Grid</span>
-              </button>
-              <button className={view === "table" ? "active" : ""} onClick={() => changeView("table")} title="Table">
-                <Table2 size={18} />
-                <span>Table</span>
-              </button>
-              <button className={view === "cards" ? "active" : ""} onClick={() => changeView("cards")} title="Cards">
-                <UsersRound size={18} />
-                <span>Cards</span>
-              </button>
-              <button className={view === "vertical" ? "active" : ""} onClick={() => changeView("vertical")} title="Vertical ticker">
-                <ArrowDownUp size={18} />
-                <span>Up/Down</span>
-              </button>
-              <button className={view === "horizontal" ? "active" : ""} onClick={() => changeView("horizontal")} title="Horizontal ticker">
-                <ArrowLeftRight size={18} />
-                <span>Left/Right</span>
-              </button>
+            <div className="projector-monitor-actions">
+              <div className="projector-view-switch" aria-label="เลือกมุมมองสถานะ">
+                <button className={monitorMode === "grid" ? "active" : ""} onClick={() => setMonitorMode("grid")}>ตาราง</button>
+                <button className={monitorMode === "ticker" ? "active" : ""} onClick={() => setMonitorMode("ticker")}>อักษรวิ่ง</button>
+              </div>
+              <div className="projector-progress-total">
+                <strong>{confirmedPct}%</strong>
+                <span>เสร็จสมบูรณ์</span>
+              </div>
             </div>
           </div>
-          <h2>ความคืบหน้าการส่งผลงาน realtime</h2>
-          <ProjectorProgressView rows={rows} view={view} />
-          <StatCards stats={state?.stats} projector />
+          <div className="projector-progress-bar" aria-hidden="true">
+            <div style={{ width: `${confirmedPct}%` }} />
+          </div>
+          {monitorMode === "ticker" ? <ProjectorHorizontalTicker rows={rows} /> : <ProjectorCompactGrid rows={rows} />}
         </div>
+
+        <aside className="projector-qr-panel" aria-label="QR code สำหรับส่งผลงาน">
+          <ProjectorQrPanel
+            systemUrlQr={state?.systemUrlQr}
+            publicUrl={settings?.publicUrl}
+            onOpenFallback={() => setFallbackOpen(true)}
+          />
+        </aside>
       </section>
+
+      <section className="projector-bottom-bar" aria-label="สรุปสถานะและ QR code">
+        <ProjectorSummaryBar stats={state?.stats} />
+      </section>
+      {fallbackOpen ? <ProjectorFallbackModal onClose={() => setFallbackOpen(false)} /> : null}
     </main>
+  );
+}
+
+function ProjectorSummaryBar({ stats }: { stats?: Record<string, number> }) {
+  const value = (key: string) => stats?.[key] || 0;
+  const items = [
+    { label: "ทั้งหมด", value: value("total"), tone: "slate" },
+    { label: "ยังไม่เริ่ม", value: value("not_started"), tone: "slate" },
+    { label: "กำลังส่ง", value: value("uploading"), tone: "orange" },
+    { label: "กำลังตรวจ", value: value("verifying"), tone: "cyan" },
+    { label: "รอยืนยัน", value: value("ready_to_confirm"), tone: "violet" },
+    { label: "ยืนยันแล้ว", value: value("candidate_confirmed") + value("admin_confirmed") + value("confirmed"), tone: "emerald" },
+    { label: "ต้องส่งใหม่", value: value("needs_resubmit"), tone: "rose" },
+    { label: "เปิดสิทธิ์ใหม่", value: value("admin_unlocked"), tone: "blue" }
+  ] as const;
+
+  return (
+    <div className="projector-summary-strip">
+      {items.map((item) => (
+        <div className={`projector-summary-item ${item.tone}`} key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProjectorOperationsPanel({ stats, total }: { stats?: Record<string, number>; total: number }) {
+  const value = (key: string) => stats?.[key] || 0;
+  const items = [
+    { key: "total", label: "ผู้เข้าสอบทั้งหมด", value: value("total") || total, tone: "slate" },
+    { key: "not_started", label: "ยังไม่เริ่มส่ง", value: value("not_started"), tone: "slate" },
+    { key: "uploading", label: "กำลังอัปโหลด", value: value("uploading"), tone: "orange" },
+    { key: "verifying", label: "กำลังตรวจไฟล์", value: value("verifying"), tone: "cyan" },
+    { key: "ready", label: "รอผู้สอบยืนยัน", value: value("ready_to_confirm"), tone: "violet" },
+    { key: "confirmed", label: "ยืนยันครบแล้ว", value: value("candidate_confirmed") + value("admin_confirmed") + value("confirmed"), tone: "emerald" },
+    { key: "resubmit", label: "ต้องส่งใหม่", value: value("needs_resubmit"), tone: "rose" },
+    { key: "unlocked", label: "เปิดสิทธิ์ใหม่", value: value("admin_unlocked"), tone: "blue" }
+  ];
+
+  return (
+    <section className="projector-ops-card">
+      <div className="projector-section-kicker">ภาพรวมสถานะ</div>
+      <h2>ภาพรวมการส่งผลงาน</h2>
+      <div className="projector-status-list">
+        {items.map((item) => (
+          <div className={`projector-status-row ${item.tone}`} key={item.key}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ProjectorInsightsPanel({
+  rows,
+  timer,
+  remainingSeconds
+}: {
+  rows: CandidateSummary[];
+  timer?: PublicState["timer"] | null;
+  remainingSeconds: number;
+}) {
+  const total = rows.length;
+  const started = rows.filter((row) => row.status !== "not_started").length;
+  const uploaded = rows.filter((row) =>
+    ["ready_to_confirm", "candidate_confirmed", "admin_confirmed", "confirmed"].includes(row.status)
+  ).length;
+  const attention = rows.filter((row) => row.status === "needs_resubmit" || row.status === "admin_unlocked" || Boolean(row.errorMessage)).length;
+  const waiting = rows.filter((row) => row.status === "not_started").length;
+  const active = rows.filter((row) => ["uploading", "verifying"].includes(row.status)).length;
+  const duration = timer?.durationSeconds || 0;
+  const elapsed = timer?.state === "running" && duration ? Math.max(0, duration - remainingSeconds) : timer?.state === "ended" ? duration : 0;
+  const elapsedPct = duration ? Math.min(100, Math.round((elapsed / duration) * 100)) : 0;
+  const bars = [
+    { label: "เริ่มดำเนินการ", value: started, pct: percent(started, total), tone: "blue" },
+    { label: "ไฟล์ผ่านตรวจ", value: uploaded, pct: percent(uploaded, total), tone: "emerald" },
+    { label: "กำลังอัปโหลด/ตรวจ", value: active, pct: percent(active, total), tone: "cyan" },
+    { label: "ต้องติดตาม", value: attention, pct: percent(attention, total), tone: "rose" }
+  ];
+
+  return (
+    <section className="projector-ops-card projector-insights-card">
+      <div className="projector-section-kicker">Insight Data</div>
+      <h2>สัญญาณหน้างาน</h2>
+      <div className="projector-insight-hero">
+        <div>
+          <span>ยังไม่เริ่ม</span>
+          <strong>{waiting}</strong>
+          <small>จาก {total} คน</small>
+        </div>
+        <div>
+          <span>เวลาที่ใช้ไป</span>
+          <strong>{elapsedPct}%</strong>
+          <small>{timer?.state === "running" ? "กำลังสอบ" : timer?.state === "ended" ? "สิ้นสุดแล้ว" : "ยังไม่เริ่ม"}</small>
+        </div>
+      </div>
+      <div className="projector-insight-bars">
+        {bars.map((bar) => (
+          <div className={`projector-insight-bar ${bar.tone}`} key={bar.label}>
+            <span>{bar.label}</span>
+            <strong>{bar.value}</strong>
+            <i aria-hidden="true"><b style={{ width: `${bar.pct}%` }} /></i>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function percent(value: number, total: number) {
+  return total ? Math.round((value / total) * 100) : 0;
+}
+
+function ProjectorConfirmationPanel({
+  confirmedCount,
+  confirmedPct,
+  readyCount,
+  unconfirmedCount,
+  candidateConfirmedCount,
+  adminConfirmedCount
+}: {
+  confirmedCount: number;
+  confirmedPct: number;
+  readyCount: number;
+  unconfirmedCount: number;
+  candidateConfirmedCount: number;
+  adminConfirmedCount: number;
+}) {
+  return (
+    <section className="projector-confirm-card">
+      <div>
+        <div className="projector-section-kicker">การยืนยัน</div>
+        <h2>ยืนยันผลงาน</h2>
+      </div>
+      <div className="projector-confirm-meter">
+        <strong>{confirmedPct}%</strong>
+        <span>ยืนยันแล้ว</span>
+        <div aria-hidden="true">
+          <i style={{ width: `${confirmedPct}%` }} />
+        </div>
+      </div>
+      <div className="projector-confirm-grid">
+        <div>
+          <span>ผู้สอบ</span>
+          <strong>{candidateConfirmedCount}</strong>
+        </div>
+        <div>
+          <span>กรรมการ</span>
+          <strong>{adminConfirmedCount}</strong>
+        </div>
+        <div>
+          <span>รวมเสร็จ</span>
+          <strong>{confirmedCount}</strong>
+        </div>
+        <div>
+          <span>รอยืนยัน</span>
+          <strong>{readyCount}</strong>
+        </div>
+        <div>
+          <span>คงเหลือ</span>
+          <strong>{unconfirmedCount}</strong>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProjectorLegend() {
+  const items = [
+    ["not_started", "รอ"],
+    ["uploading", "ส่งไฟล์"],
+    ["verifying", "ตรวจไฟล์"],
+    ["ready_to_confirm", "รอยืนยัน"],
+    ["confirmed", "ยืนยันแล้ว"],
+    ["needs_resubmit", "ต้องแก้ไข"]
+  ] as const;
+  return (
+    <section className="projector-legend-card" aria-label="คำอธิบายสีสถานะ">
+      {items.map(([status, label]) => (
+        <div className={`projector-legend-item ${statusTone(status)}`} key={status}>
+          <i aria-hidden="true" />
+          <span>{label}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ProjectorQrPanel({
+  systemUrlQr,
+  publicUrl,
+  onOpenFallback
+}: {
+  systemUrlQr?: string;
+  publicUrl?: string;
+  onOpenFallback: () => void;
+}) {
+  return (
+    <div className="projector-qr-shell">
+      <div className="projector-section-kicker">Main Submission QR</div>
+      <h2>ส่งผลงานระบบหลัก</h2>
+      <div className="projector-main-qr">
+        {systemUrlQr ? <img src={systemUrlQr} alt="QR URL ระบบส่งผลงาน" /> : <div className="qr-placeholder">QR</div>}
+      </div>
+      <div className="projector-url-box">
+        <QrCode size={16} />
+        <span>{publicUrl || "-"}</span>
+      </div>
+      <button className="projector-fallback-button" onClick={onOpenFallback}>
+        <AlertTriangle size={15} />
+        Backup Drive
+      </button>
+    </div>
+  );
+}
+
+function ProjectorFallbackModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="projector-fallback-backdrop" role="dialog" aria-modal="true" aria-label="ช่องทางสำรอง Google Drive">
+      <div className="projector-fallback-modal">
+        <div className="projector-fallback-head">
+          <div>
+            <div className="projector-section-kicker">Emergency Upload Channel</div>
+            <h2>Google Drive สำรอง</h2>
+          </div>
+          <button className="projector-fallback-close" onClick={onClose} aria-label="ปิดหน้าต่างช่องทางสำรอง">
+            <Square size={14} />
+          </button>
+        </div>
+        <p>
+          ช่องทางสำรองสำหรับกรณีระบบหลักขัดข้องเท่านั้น กรุณาใช้งานเมื่อกรรมการแจ้งให้ใช้
+        </p>
+        <div className="projector-fallback-content">
+          <div className="projector-fallback-qr">
+            <img src={qrImageSrc(googleDriveFallbackUrl, 260)} alt="QR Google Drive สำรอง" />
+            <span>สแกนเพื่อเปิด Google Drive</span>
+          </div>
+          <div className="projector-fallback-copy">
+            <a href={googleDriveFallbackUrl} target="_blank" rel="noreferrer">
+              {googleDriveFallbackUrl}
+            </a>
+            <small>กรณีใช้ช่องทางสำรอง ให้ตั้งชื่อไฟล์ด้วยลำดับหรือเลขประจำตัวสอบก่อนอัปโหลด</small>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -863,6 +1388,53 @@ function ProjectorGrid({ rows }: { rows: CandidateSummary[] }) {
       ))}
     </div>
   );
+}
+
+function ProjectorCompactGrid({ rows }: { rows: CandidateSummary[] }) {
+  return (
+    <div className="projector-compact-grid">
+      {rows.map((row) => (
+        <ProjectorCompactCell row={row} key={row.id} />
+      ))}
+    </div>
+  );
+}
+
+function ProjectorCompactCell({ row }: { row: CandidateSummary }) {
+  const candidateConfirmed = Boolean(row.candidateConfirmedAt || row.status === "candidate_confirmed" || row.status === "confirmed");
+  const adminConfirmed = Boolean(row.adminConfirmedAt || row.status === "admin_confirmed" || row.status === "confirmed");
+  const warning = row.status === "needs_resubmit" || Boolean(row.errorMessage);
+  return (
+    <div className={`projector-compact-cell ${statusTone(row.status)}`}>
+      <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+      <span>{row.applicantNo}</span>
+      <em>{projectorShortStatus(row)}</em>
+      <small>
+        {row.status === "uploading" ? `${Math.round(row.progress || 0)}%` : warning ? "!" : (
+          <>
+            <b className={candidateConfirmed ? "on" : ""}>ผ</b>
+            <b className={adminConfirmed ? "on" : ""}>ก</b>
+          </>
+        )}
+      </small>
+    </div>
+  );
+}
+
+function projectorShortStatus(row: CandidateSummary) {
+  if (row.status === "uploading") return `${Math.round(row.progress)}%`;
+  const map: Partial<Record<CandidateSummary["status"], string>> = {
+    not_started: "รอ",
+    verifying: "ตรวจ",
+    ready_to_confirm: "ยืนยัน",
+    candidate_confirmed: "ส่งแล้ว",
+    admin_confirmed: "รับรอง",
+    confirmed: "เสร็จ",
+    needs_resubmit: "แก้ไข",
+    expired: "หมดเวลา",
+    admin_unlocked: "เปิดใหม่"
+  };
+  return map[row.status] || statusLabel(row.status);
 }
 
 function ProjectorCell({ row }: { row: CandidateSummary }) {
@@ -913,7 +1485,7 @@ function ProjectorCards({ rows }: { rows: CandidateSummary[] }) {
             <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
             <span>{row.applicantNo}</span>
           </div>
-          <p>{row.fullName || "-"}</p>
+          <p>ลำดับ {String(row.sequenceNo).padStart(2, "0")}</p>
           <em>{statusLabel(row.status)}</em>
         </article>
       ))}
@@ -935,35 +1507,46 @@ function ProjectorVerticalTicker({ rows }: { rows: CandidateSummary[] }) {
 }
 
 function ProjectorHorizontalTicker({ rows }: { rows: CandidateSummary[] }) {
-  const tickerRows = rows.length > 0 ? [...rows, ...rows] : [];
+  const firstLane = rows.filter((_, index) => index % 2 === 0);
+  const secondLane = rows.filter((_, index) => index % 2 === 1);
+  const lanes = [firstLane, secondLane].map((lane) => (lane.length > 0 ? [...lane, ...lane] : []));
   return (
     <div className="projector-ticker horizontal" aria-label="Horizontal candidate progress ticker">
-      <div className="projector-ticker-track">
-        {tickerRows.map((row, index) => (
-          <ProjectorTickerChip row={row} key={`${row.id}-${index}`} />
-        ))}
-      </div>
+      {lanes.map((tickerRows, laneIndex) => (
+        <div className="projector-ticker-lane" key={laneIndex}>
+          <div className="projector-ticker-track">
+            {tickerRows.map((row, index) => (
+              <ProjectorTickerChip row={row} key={`${row.id}-${laneIndex}-${index}`} />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 
 function ProjectorTickerRow({ row }: { row: CandidateSummary }) {
+  const candidateConfirmed = Boolean(row.candidateConfirmedAt || row.status === "candidate_confirmed" || row.status === "confirmed");
+  const adminConfirmed = Boolean(row.adminConfirmedAt || row.status === "admin_confirmed" || row.status === "confirmed");
   return (
     <div className={`projector-ticker-row ${statusTone(row.status)}`}>
       <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
       <span>{row.applicantNo}</span>
-      <em>{row.fullName || "-"}</em>
-      <small>{statusLabel(row.status)}</small>
+      <em>{row.status === "uploading" ? `${Math.round(row.progress)}%` : statusLabel(row.status)}</em>
+      <small>ผู้สอบ {candidateConfirmed ? "ยืนยัน" : "-"} • กรรมการ {adminConfirmed ? "รับรอง" : "-"}</small>
     </div>
   );
 }
 
 function ProjectorTickerChip({ row }: { row: CandidateSummary }) {
+  const candidateConfirmed = Boolean(row.candidateConfirmedAt || row.status === "candidate_confirmed" || row.status === "confirmed");
+  const adminConfirmed = Boolean(row.adminConfirmedAt || row.status === "admin_confirmed" || row.status === "confirmed");
   return (
     <div className={`projector-ticker-chip ${statusTone(row.status)}`}>
       <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
       <span>{row.applicantNo}</span>
       <em>{statusLabel(row.status)}</em>
+      <small>ผู้สอบ {candidateConfirmed ? "✓" : "-"} / กรรมการ {adminConfirmed ? "✓" : "-"}</small>
     </div>
   );
 }
@@ -1003,12 +1586,34 @@ function TimerControlPanel({
 function TimerPill({ timer }: { timer?: PublicState["timer"] | AdminState["timer"] | null }) {
   const remainingSeconds = useCountdownSeconds(timer);
   const isRunning = timer?.state === "running";
+  const ended = timer?.state === "ended" || (isRunning && remainingSeconds <= 0);
+  const notice = timerNotice(timer, remainingSeconds);
   return (
-    <div className={`timer-pill ${isRunning ? "running" : ""}`}>
-      {isRunning ? <span className="timer-pulse" aria-hidden="true" /> : null}
+    <div className={`timer-pill ${isRunning ? "running" : ""} ${ended ? "ended" : ""} ${notice?.tone === "bad" ? "urgent" : ""}`}>
+      {isRunning && !ended ? <span className="timer-pulse" aria-hidden="true" /> : null}
       <Clock size={20} />
-      <span>{isRunning ? "กำลังสอบ" : timer?.state === "ended" ? "ปิดรับงาน" : "ยังไม่เริ่ม"}</span>
+      <span>{ended ? "หมดเวลาสอบแล้ว" : isRunning ? "กำลังสอบ" : "ยังไม่เริ่ม"}</span>
       <strong>{formatSeconds(remainingSeconds)}</strong>
+    </div>
+  );
+}
+
+function TimerNotice({
+  timer,
+  className = ""
+}: {
+  timer?: PublicState["timer"] | AdminState["timer"] | null;
+  className?: string;
+}) {
+  const remainingSeconds = useCountdownSeconds(timer);
+  const notice = timerNotice(timer, remainingSeconds);
+  if (!notice) return null;
+  return (
+    <div className={`notice timer-alert ${notice.tone} ${className}`}>
+      {notice.tone === "bad" ? <AlertTriangle size={18} /> : <Bell size={18} />}
+      <span>
+        <strong>{notice.title}</strong> {notice.detail}
+      </span>
     </div>
   );
 }
@@ -1019,6 +1624,427 @@ function StatusBadge({ status, progress = 0 }: { status: CandidateSummary["statu
       {statusLabel(status)}
       {status === "uploading" ? ` ${Math.round(progress)}%` : ""}
     </span>
+  );
+}
+
+type ReportDimension = "status" | "confirmation" | "verification" | "risk";
+type ReportFocus = "all" | "pending" | "ready" | "risk";
+
+function AdminReportPanel({
+  candidates,
+  timer,
+  settings
+}: {
+  candidates: CandidateSummary[];
+  timer?: AdminState["timer"] | null;
+  settings?: AdminState["settings"];
+}) {
+  const [dimension, setDimension] = useState<ReportDimension>("status");
+  const [focus, setFocus] = useState<ReportFocus>("all");
+
+  const rows = useMemo(
+    () =>
+      candidates.map((row) => {
+        const candidateConfirmed = Boolean(row.candidateConfirmedAt || row.status === "candidate_confirmed" || row.status === "confirmed");
+        const adminConfirmed = Boolean(row.adminConfirmedAt || row.status === "admin_confirmed" || row.status === "confirmed");
+        const ready = row.status === "ready_to_confirm";
+        const risk = row.status === "needs_resubmit" || Boolean(row.errorMessage);
+        return {
+          ...row,
+          candidateConfirmed,
+          adminConfirmed,
+          ready,
+          risk,
+          confirmationState: candidateConfirmed && adminConfirmed ? "ครบทั้งสองฝ่าย" : candidateConfirmed ? "ผู้สอบยืนยันแล้ว" : adminConfirmed ? "กรรมการรับรองแล้ว" : ready ? "รอผู้สอบยืนยัน" : "ยังไม่ยืนยัน",
+          verificationState: risk ? "ต้องแก้ไข/ส่งใหม่" : ["ready_to_confirm", "candidate_confirmed", "admin_confirmed", "confirmed"].includes(row.status) ? "ไฟล์ผ่านการตรวจ" : row.status === "verifying" ? "กำลังตรวจไฟล์" : row.status === "uploading" ? "กำลังอัปโหลด" : "ยังไม่มีไฟล์ผ่านตรวจ"
+        };
+      }),
+    [candidates]
+  );
+
+  const filteredRows = useMemo(() => {
+    if (focus === "pending") return rows.filter((row) => !row.candidateConfirmed || !row.adminConfirmed);
+    if (focus === "ready") return rows.filter((row) => row.ready || (row.candidateConfirmed && !row.adminConfirmed));
+    if (focus === "risk") return rows.filter((row) => row.risk || row.status === "admin_unlocked");
+    return rows;
+  }, [focus, rows]);
+
+  const breakdown = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of filteredRows) {
+      const key =
+        dimension === "confirmation"
+          ? row.confirmationState
+          : dimension === "verification"
+            ? row.verificationState
+            : dimension === "risk"
+              ? row.risk
+                ? "ต้องส่งใหม่/มีข้อผิดพลาด"
+                : row.status === "admin_unlocked"
+                  ? "เปิดสิทธิ์ใหม่"
+                  : "ปกติ"
+              : statusLabel(row.status);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [dimension, filteredRows]);
+
+  const candidateConfirmedCount = rows.filter((row) => row.candidateConfirmed).length;
+  const adminConfirmedCount = rows.filter((row) => row.adminConfirmed).length;
+  const readyForAdmin = rows.filter((row) => row.candidateConfirmed && !row.adminConfirmed).length;
+  const riskCount = rows.filter((row) => row.risk).length;
+
+  function exportReportCsv() {
+    const header = [
+      "ลำดับ",
+      "เลขประจำตัวสอบ",
+      "ชื่อ-สกุล",
+      "สถานะระบบ",
+      "ความคืบหน้า",
+      "สถานะตรวจไฟล์",
+      "ผู้สอบยืนยัน",
+      "กรรมการรับรอง",
+      "สถานะยืนยัน",
+      "หมายเหตุ"
+    ];
+    const body = filteredRows.map((row) => [
+      row.sequenceNo,
+      row.applicantNo,
+      row.fullName || "",
+      statusLabel(row.status),
+      `${Math.round(row.progress || 0)}%`,
+      row.verificationState,
+      row.candidateConfirmed ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน",
+      row.adminConfirmed ? "รับรองแล้ว" : "ยังไม่รับรอง",
+      row.confirmationState,
+      row.errorMessage || ""
+    ]);
+    downloadCsv(`smart-submission-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`, [header, ...body]);
+  }
+
+  function printReportPdf() {
+    const title = "รายงานผลการส่งผลงานสอบปฏิบัติ";
+    const generatedAt = displayDateTime(new Date().toISOString());
+    const organization = settings?.organization || "หน่วยงานจัดสอบ";
+    const examTitle = settings?.examTitle || "การสอบปฏิบัติ";
+    const location = settings?.location || "-";
+    const rowsHtml = filteredRows
+      .map(
+        (row) => `
+          <tr>
+            <td>${escapeHtml(row.sequenceNo)}</td>
+            <td>${escapeHtml(row.applicantNo)}</td>
+            <td>${escapeHtml(row.fullName || "")}</td>
+            <td>${escapeHtml(statusLabel(row.status))}</td>
+            <td>${escapeHtml(`${Math.round(row.progress || 0)}%`)}</td>
+            <td>${escapeHtml(row.verificationState)}</td>
+            <td>${escapeHtml(row.candidateConfirmed ? "ยืนยันแล้ว" : "-")}</td>
+            <td>${escapeHtml(row.adminConfirmed ? "รับรองแล้ว" : "-")}</td>
+            <td>${escapeHtml(row.errorMessage || "")}</td>
+          </tr>`
+      )
+      .join("");
+    const kpis = [
+      ["ผู้สอบยืนยัน", candidateConfirmedCount],
+      ["กรรมการรับรอง", adminConfirmedCount],
+      ["รอกรรมการ", readyForAdmin],
+      ["ต้องติดตาม", riskCount]
+    ];
+    const win = window.open("", "_blank", "width=1200,height=800");
+    if (!win) return;
+    win.document.write(`<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${title}</title>
+          <style>
+            @page { size: A4 landscape; margin: 12mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; font-family: "Sarabun", "Noto Sans Thai", "Prompt", sans-serif; color: #111827; background: #fff; }
+            .sheet { min-height: 100vh; padding: 0; }
+            header { display: grid; grid-template-columns: 72px minmax(0, 1fr) 220px; gap: 16px; align-items: center; border-bottom: 2px solid #111827; padding-bottom: 12px; margin-bottom: 12px; }
+            header img { width: 64px; height: 64px; object-fit: contain; }
+            h1 { margin: 0; font-size: 24px; text-align: center; line-height: 1.25; }
+            h2 { margin: 4px 0 0; font-size: 16px; text-align: center; font-weight: 700; }
+            p { margin: 3px 0 0; color: #374151; font-weight: 700; }
+            .meta { text-align: right; font-size: 11px; }
+            .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+            .kpi { border: 1px solid #9ca3af; padding: 8px 10px; background: #f9fafb; }
+            .kpi span { display: block; color: #374151; font-size: 11px; font-weight: 700; }
+            .kpi strong { display: block; margin-top: 3px; font-size: 24px; line-height: 1; }
+            table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+            th { background: #e5e7eb; color: #111827; text-align: left; padding: 6px; border: 1px solid #9ca3af; }
+            td { border: 1px solid #d1d5db; padding: 5px 6px; vertical-align: top; }
+            tr:nth-child(even) td { background: #f9fafb; }
+            .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 22px; page-break-inside: avoid; }
+            .signature { text-align: center; min-height: 72px; padding-top: 34px; color: #111827; font-size: 12px; }
+            .signature .line { border-top: 1px solid #111827; padding-top: 7px; }
+            .signature small { display: block; margin-top: 4px; color: #4b5563; }
+            footer { margin-top: 10px; color: #4b5563; font-size: 10px; font-weight: 700; }
+            @media print { body { background: #fff; } .sheet { padding: 0; } }
+          </style>
+        </head>
+        <body>
+          <main class="sheet">
+            <header>
+              <img src="/municipality-logo.png" alt="" />
+              <div>
+                <h1>${title}</h1>
+                <h2>${escapeHtml(examTitle)}</h2>
+                <p>${escapeHtml(organization)} • สถานที่ ${escapeHtml(location)}</p>
+              </div>
+              <div class="meta">
+                <p>สร้างเมื่อ ${generatedAt}</p>
+                <p>จำนวน ${filteredRows.length} รายการ จากผู้เข้าสอบทั้งหมด ${rows.length} คน</p>
+              </div>
+            </header>
+            <section class="kpis">
+              ${kpis.map(([label, value]) => `<div class="kpi"><span>${label}</span><strong>${value}</strong></div>`).join("")}
+            </section>
+            <table>
+              <thead>
+                <tr>
+                  <th>ลำดับ</th><th>เลขสอบ</th><th>ชื่อ-นามสกุล</th><th>สถานะ</th><th>คืบหน้า</th><th>ตรวจไฟล์</th><th>ผู้สอบ</th><th>กรรมการ</th><th>หมายเหตุ</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+            <section class="signatures">
+              ${[1, 2, 3].map((item) => `
+                <div class="signature">
+                  <div class="line">(ลงชื่อ) ................................................</div>
+                  <small>กรรมการตรวจรับรองผลงาน คนที่ ${item}</small>
+                </div>
+              `).join("")}
+            </section>
+            <footer>บันทึกเป็น PDF: เลือกเครื่องพิมพ์ "Save as PDF" หรือ "Microsoft Print to PDF"</footer>
+          </main>
+        </body>
+      </html>`);
+    win.document.close();
+    win.focus();
+    window.setTimeout(() => win.print(), 300);
+  }
+
+  function printCandidateCards() {
+    const sortedRows = [...filteredRows].sort((a, b) => a.sequenceNo - b.sequenceNo);
+    const publicUrl = settings?.publicUrl || window.location.origin;
+    const wifiQr = settings?.wifiQrAvailable ? "/files/wifi-qr" : "";
+    const wifiSsid = settings?.wifiSsid || "@Communication";
+    const wifiPassword = settings?.wifiPassword || "VoIPvy,ibomiN";
+    const cardsHtml = sortedRows
+      .map((row) => {
+        const submitUrl = candidateSubmitUrl(publicUrl, row.applicantNo);
+        return `
+          <article class="seat-card">
+            <div class="qr-block">
+              <img src="${qrImageSrc(submitUrl, 220)}" alt="QR ส่งงาน" />
+              <span>QR ส่งงาน</span>
+            </div>
+            <div class="candidate-info">
+              <small>ลำดับที่</small>
+              <strong>${escapeHtml(String(row.sequenceNo).padStart(2, "0"))}</strong>
+              <b>${escapeHtml(row.applicantNo)}</b>
+              <p>${escapeHtml(row.fullName || "")}</p>
+            </div>
+            <div class="qr-block wifi">
+              ${wifiQr ? `<img src="${wifiQr}" alt="QR Wi-Fi" />` : `<div class="qr-missing">Wi-Fi</div>`}
+              <span>QR Wi-Fi</span>
+            </div>
+            <div class="card-instructions">
+              <b>QR ส่งงาน:</b> 1. สแกน 2. อัปโหลดไฟล์ 3. เปิดดูตัวอย่างแล้วกดยืนยัน จากนั้นบันทึกหลักฐานได้
+              <br />
+              <b>Wi-Fi:</b> ${escapeHtml(wifiSsid)} / รหัส ${escapeHtml(wifiPassword)} ใช้กล้องมือถือสแกน QR ไม่ควรสแกนผ่าน LINE
+            </div>
+          </article>`;
+      })
+      .join("");
+    const win = window.open("", "_blank", "width=1100,height=800");
+    if (!win) return;
+    win.document.write(`<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>บัตร QR ประจำโต๊ะผู้เข้าสอบ</title>
+          <style>
+            @page { size: A4 portrait; margin: 9mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; font-family: "Prompt", "Sarabun", "Noto Sans Thai", sans-serif; color: #14213d; background: #f8fafc; }
+            .sheet { display: grid; grid-template-columns: repeat(2, 88mm); gap: 6mm; align-content: start; justify-content: center; padding: 0; }
+            .seat-card { width: 88mm; min-height: 66mm; display: grid; grid-template-columns: 23mm minmax(0, 1fr) 23mm; gap: 3mm 6mm; align-items: center; padding: 4mm; break-inside: avoid; border: 1.2px solid #94a3b8; border-radius: 3mm; background: #fff; }
+            .qr-block { display: grid; gap: 1.4mm; justify-items: center; align-content: center; }
+            .qr-block img, .qr-missing { width: 22mm; height: 22mm; object-fit: contain; border: 1px solid #e2e8f0; border-radius: 1mm; background: #fff; }
+            .qr-missing { display: grid; place-items: center; color: #94a3b8; font-size: 8px; font-weight: 900; }
+            .qr-block span { color: #475569; font-size: 7.5px; font-weight: 900; white-space: nowrap; }
+            .candidate-info { min-width: 0; text-align: center; border-inline: 1px dashed #cbd5e1; padding-inline: 2.8mm; }
+            .candidate-info small { display: block; color: #64748b; font-size: 8px; font-weight: 900; }
+            .candidate-info strong { display: block; color: #5b21b6; font-size: 28px; line-height: 1; font-weight: 900; }
+            .candidate-info b { display: block; margin-top: 1.5mm; font-size: 10px; }
+            .candidate-info p { margin: 1.5mm 0 0; font-size: 9px; line-height: 1.25; font-weight: 900; overflow-wrap: anywhere; }
+            .card-instructions { grid-column: 1 / -1; padding-top: 2.4mm; border-top: 1px dashed #cbd5e1; color: #334155; font-size: 7.2px; line-height: 1.28; font-weight: 700; }
+            .card-instructions b { color: #111827; }
+            @media print { body { background: #fff; } }
+          </style>
+        </head>
+        <body><main class="sheet">${cardsHtml}</main></body>
+      </html>`);
+    win.document.close();
+    win.focus();
+    window.setTimeout(() => win.print(), 700);
+  }
+
+  return (
+    <section className="panel admin-report-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>รายงานอัจฉริยะการส่งผลงาน</h2>
+          <p>สรุปสถานะหลายมิติสำหรับตรวจติดตาม ออกรายงาน และส่งต่อกรรมการหลังสอบ</p>
+        </div>
+        <div className="toolbar-actions">
+          <button onClick={printReportPdf} disabled={filteredRows.length === 0} title="เปิดเทมเพลตรายงานสวยงามเพื่อบันทึกเป็น PDF">
+            <FileCheck2 size={16} />
+            PDF
+          </button>
+          <button onClick={printCandidateCards} disabled={filteredRows.length === 0} title="พิมพ์บัตรเล็กประจำโต๊ะ พร้อม QR ส่งงานและ QR Wi-Fi ที่แยกห่างกัน">
+            <Printer size={16} />
+            บัตรโต๊ะ
+          </button>
+          <button onClick={exportReportCsv} disabled={filteredRows.length === 0}>
+            <Download size={16} />
+            Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="report-toolbar">
+        <label>
+          มุมมอง
+          <select value={dimension} onChange={(event) => setDimension(event.target.value as ReportDimension)}>
+            <option value="status">สถานะระบบ</option>
+            <option value="confirmation">การยืนยัน</option>
+            <option value="verification">การตรวจไฟล์</option>
+            <option value="risk">ความเสี่ยง/ต้องติดตาม</option>
+          </select>
+        </label>
+        <label>
+          กลุ่มข้อมูล
+          <select value={focus} onChange={(event) => setFocus(event.target.value as ReportFocus)}>
+            <option value="all">ทั้งหมด</option>
+            <option value="pending">ยังยืนยันไม่ครบ</option>
+            <option value="ready">รอกรรมการ/รอผู้สอบ</option>
+            <option value="risk">ต้องติดตาม</option>
+          </select>
+        </label>
+        <span className="report-timer-note">เวลา: {timer?.state === "running" ? "กำลังสอบ" : timer?.state === "ended" ? "สิ้นสุดแล้ว" : "ยังไม่เริ่ม"}</span>
+      </div>
+
+      <div className="report-kpi-grid">
+        <div><span>ผู้สอบยืนยัน</span><strong>{candidateConfirmedCount}</strong></div>
+        <div><span>กรรมการรับรอง</span><strong>{adminConfirmedCount}</strong></div>
+        <div><span>รอกรรมการ</span><strong>{readyForAdmin}</strong></div>
+        <div><span>ต้องติดตาม</span><strong>{riskCount}</strong></div>
+      </div>
+
+      <div className="report-content-grid">
+        <div className="report-breakdown">
+          {breakdown.map(([label, count]) => (
+            <div key={label}>
+              <span>{label}</span>
+              <strong>{count}</strong>
+            </div>
+          ))}
+        </div>
+        <div className="table-wrap report-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ลำดับ</th>
+                <th>เลขสอบ</th>
+                <th>สถานะ</th>
+                <th>ผู้สอบ</th>
+                <th>กรรมการ</th>
+                <th>ติดตาม</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRows.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.sequenceNo}</td>
+                  <td>{row.applicantNo}</td>
+                  <td><StatusBadge status={row.status} progress={row.progress} /></td>
+                  <td>{row.candidateConfirmed ? "ยืนยันแล้ว" : "-"}</td>
+                  <td>{row.adminConfirmed ? "รับรองแล้ว" : "-"}</td>
+                  <td>{row.risk ? "ต้องส่งใหม่" : row.ready ? "รอยืนยัน" : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function downloadCsv(fileName: string, rows: Array<Array<string | number>>) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function qrImageSrc(text: string, size = 220) {
+  return `/api/public/qr?size=${size}&text=${encodeURIComponent(text)}`;
+}
+
+function candidateSubmitUrl(publicUrl: string, applicantNo?: string) {
+  const base = publicUrl || window.location.origin;
+  try {
+    const url = new URL("/submit", base.endsWith("/") ? base : `${base}/`);
+    if (applicantNo) url.searchParams.set("candidate", applicantNo);
+    return url.toString();
+  } catch {
+    const url = new URL("/submit", window.location.origin);
+    if (applicantNo) url.searchParams.set("candidate", applicantNo);
+    return url.toString();
+  }
+}
+
+function csvCell(value: string | number) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function escapeHtml(value: string | number) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function CandidateStatusBadge({ status, progress = 0 }: { status: CandidateSummary["status"]; progress?: number }) {
+  const label = status === "admin_confirmed" ? "พร้อมยืนยันส่งงาน" : statusLabel(status);
+  return (
+    <span className={`status-badge ${statusTone(status)}`}>
+      {label}
+      {status === "uploading" ? ` ${Math.round(progress)}%` : ""}
+    </span>
+  );
+}
+
+function CandidateReviewStatus({ confirmedAt }: { confirmedAt?: string | null }) {
+  return (
+    <div className="review-status candidate-review-status">
+      <div className={confirmedAt ? "ok" : ""}>
+        <span>การยืนยันของผู้เข้าสอบ</span>
+        <strong>{confirmedAt ? "ยืนยันแล้ว" : "ยังไม่ยืนยัน"}</strong>
+        <small>{displayDateTime(confirmedAt)}</small>
+      </div>
+    </div>
   );
 }
 
@@ -1120,7 +2146,17 @@ function formatAspectRatio(value?: number | null) {
   return `จัตุรัส ${ratio.toFixed(2)}:1`;
 }
 
-function ConfirmationCard({ confirmedAt }: { confirmedAt?: string | null }) {
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, radius);
+  ctx.arcTo(x + width, y + height, x, y + height, radius);
+  ctx.arcTo(x, y + height, x, y, radius);
+  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.closePath();
+}
+
+function ConfirmationCard({ confirmedAt, onDownload }: { confirmedAt?: string | null; onDownload?: () => void }) {
   return (
     <div className="confirmation-card">
       <div className="confirmation-icon">
@@ -1130,7 +2166,22 @@ function ConfirmationCard({ confirmedAt }: { confirmedAt?: string | null }) {
         <strong>ยืนยันการส่งงานแล้ว</strong>
         <small>ยืนยันเมื่อ {displayDateTime(confirmedAt)}</small>
       </div>
+      {onDownload ? (
+        <button className="ghost proof-download" onClick={onDownload} title="บันทึกรูปภาพหลักฐานการส่งงานไว้ที่เครื่อง">
+          <Download size={16} />
+          บันทึกหลักฐาน
+        </button>
+      ) : null}
     </div>
+  );
+}
+
+function BackupSubmissionLink() {
+  return (
+    <a className="backup-submission-link" href={googleDriveFallbackUrl} target="_blank" rel="noreferrer">
+      <ExternalLink size={16} />
+      ช่องทางส่งงานสำรอง Google Drive
+    </a>
   );
 }
 
@@ -1154,6 +2205,59 @@ function StatCards({ stats, projector = false }: { stats?: Record<string, number
           <strong>{stats?.[key] ?? 0}</strong>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminControlBar({
+  timer,
+  isReadOnly,
+  onStart,
+  onStop,
+  onRestart,
+  onExtend,
+  onExport,
+  onClear
+}: {
+  timer?: AdminState["timer"] | null;
+  isReadOnly: boolean;
+  onStart: () => Promise<void>;
+  onStop: () => Promise<void>;
+  onRestart: () => Promise<void>;
+  onExtend: () => void;
+  onExport: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="admin-toolbar" id="control">
+      <div className="admin-toolbar-head">
+        <div>
+          <h2>ควบคุมเวลาสอบ</h2>
+          <p>เริ่ม หยุด เพิ่มเวลา และส่งออกข้อมูลจากจุดเดียว</p>
+        </div>
+        <TimerPill timer={timer} />
+      </div>
+      <div className="toolbar-actions">
+        <TimerControlPanel
+          timer={timer}
+          isReadOnly={isReadOnly}
+          onStart={onStart}
+          onStop={onStop}
+          onRestart={onRestart}
+        />
+        <button disabled={isReadOnly} onClick={onExtend}>
+          <Clock size={16} />
+          +5 นาที (เพิ่มได้เรื่อยๆ)
+        </button>
+        <button disabled={isReadOnly} onClick={onExport}>
+          <Download size={16} />
+          Export
+        </button>
+        <button className="danger-outline" disabled={isReadOnly} onClick={onClear}>
+          <Trash2 size={16} />
+          Clear Test Data
+        </button>
+      </div>
     </div>
   );
 }
@@ -1193,13 +2297,104 @@ function CandidateTable({
   );
 }
 
+function AdminActionQueue({
+  rows,
+  onSelect
+}: {
+  rows: CandidateSummary[];
+  onSelect: (row: CandidateSummary) => void;
+}) {
+  const groups = [
+    {
+      key: "submitted",
+      title: "ส่งงานมาแล้ว",
+      detail: "ผ่านขั้นตอนอัปโหลด รอเปิดดูหรือยืนยัน",
+      icon: FileCheck2,
+      tone: "candidate",
+      rows: rows.filter((row) => ["ready_to_confirm", "candidate_confirmed", "admin_confirmed", "confirmed"].includes(row.status))
+    },
+    {
+      key: "review",
+      title: "รอการตรวจสอบ",
+      detail: "กำลังอัปโหลดหรือระบบกำลังตรวจไฟล์",
+      icon: Eye,
+      tone: "verify",
+      rows: rows.filter((row) => ["uploading", "verifying"].includes(row.status))
+    },
+    {
+      key: "admin",
+      title: "รอกรรมการยืนยัน",
+      detail: "เปิดดูผลงานและกดยืนยันให้เสร็จ",
+      icon: ShieldCheck,
+      tone: "ready",
+      rows: rows.filter((row) => ["candidate_confirmed", "ready_to_confirm"].includes(row.status))
+    },
+    {
+      key: "problem",
+      title: "ต้องติดตาม",
+      detail: "มีปัญหา เปิดสิทธิ์ใหม่ หรือส่งใหม่",
+      icon: AlertTriangle,
+      tone: "bad",
+      rows: rows.filter((row) => ["needs_resubmit", "admin_unlocked"].includes(row.status) || Boolean(row.errorMessage))
+    }
+  ].map((group) => ({
+    ...group,
+    rows: [...group.rows].sort((a, b) => a.sequenceNo - b.sequenceNo)
+  }));
+  const readyNow = groups.find((group) => group.key === "admin")?.rows.length || 0;
+  return (
+    <section className={`panel action-queue ${readyNow ? "has-ready" : ""}`}>
+      <div className="panel-heading compact-heading">
+        <div>
+          <h2>งานที่ควรดูตอนนี้</h2>
+          <p>ดูภาพรวมเป็น card แล้วเปิดรายถัดไปได้ทันที ไม่ต้องเลื่อนหาในตารางรวม</p>
+        </div>
+        <div className="action-queue-count">
+          <Bell size={18} />
+          <strong>{readyNow}</strong>
+        </div>
+      </div>
+      <div className="action-summary-grid">
+        {groups.map((group) => {
+          const Icon = group.icon;
+          const first = group.rows[0];
+          return (
+            <button
+              className={`action-summary-card ${group.tone}`}
+              key={group.key}
+              disabled={!first}
+              onClick={() => first && onSelect(first)}
+              title={first ? `เปิด ${first.sequenceNo}. ${first.fullName || first.applicantNo}` : "ยังไม่มีรายการในกลุ่มนี้"}
+            >
+              <span className="action-summary-icon"><Icon size={22} /></span>
+              <span className="action-summary-copy">
+                <strong>{group.title}</strong>
+                <small>{group.detail}</small>
+              </span>
+              <b>{group.rows.length}</b>
+              <em>{first ? "เปิดรายถัดไป" : "ไม่มีรายการ"}</em>
+              <span className="action-summary-mini">
+                {group.rows.slice(0, 3).map((row) => (
+                  <i key={row.id}>{String(row.sequenceNo).padStart(2, "0")}</i>
+                ))}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function AdminInspector({
   detail,
   preview,
   isReadOnly,
   onPreview,
   onUnlock,
-  onAdminConfirm
+  onAdminConfirm,
+  onSaveCandidate,
+  onBack
 }: {
   token: string;
   detail: CandidateDetail | null;
@@ -1208,7 +2403,24 @@ function AdminInspector({
   onPreview: (file: SubmissionFile) => void;
   onUnlock: (reason: string) => Promise<unknown>;
   onAdminConfirm: () => Promise<void>;
+  onSaveCandidate: (id: string, payload: { sequenceNo: number; applicantNo: string; fullName: string; note?: string }) => Promise<void>;
+  onBack: () => void;
 }) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [draft, setDraft] = useState({ sequenceNo: 0, applicantNo: "", fullName: "", note: "" });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!detail) return;
+    setDraft({
+      sequenceNo: detail.sequenceNo,
+      applicantNo: detail.applicantNo,
+      fullName: detail.fullName || "",
+      note: detail.note || ""
+    });
+    setEditOpen(false);
+  }, [detail]);
+
   if (!detail) {
     return (
       <div className="empty-state">
@@ -1222,6 +2434,24 @@ function AdminInspector({
     verifiedFiles.length > 0 &&
     !detail.submission.adminConfirmedAt &&
     ["ready_to_confirm", "candidate_confirmed"].includes(detail.submission.status);
+
+  async function saveCandidate() {
+    if (isReadOnly || saving) return;
+    const payload = {
+      sequenceNo: Number(draft.sequenceNo),
+      applicantNo: draft.applicantNo.trim(),
+      fullName: draft.fullName.trim(),
+      note: draft.note.trim()
+    };
+    setSaving(true);
+    try {
+      await onSaveCandidate(detail.id, payload);
+      setEditOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div>
       <div className="panel-heading">
@@ -1232,6 +2462,58 @@ function AdminInspector({
           <p>{detail.applicantNo}</p>
         </div>
         <StatusBadge status={detail.submission.status} progress={detail.submission.progress} />
+      </div>
+      <div className="inspector-actions">
+        <button type="button" className="ghost" onClick={onBack}>
+          <ArrowLeft size={16} />
+          กลับไปรายชื่อ
+        </button>
+      </div>
+      <div className="admin-edit-card">
+        <button type="button" className="ghost" disabled={isReadOnly} onClick={() => setEditOpen((value) => !value)} title="แก้ไขลำดับ เลขสอบ และชื่อผู้เข้าสอบ">
+          <Settings size={16} />
+          แก้ไขข้อมูลผู้สอบ
+        </button>
+        {editOpen ? (
+          <div className="candidate-edit-form">
+            <input
+              disabled={isReadOnly}
+              type="number"
+              value={draft.sequenceNo}
+              onChange={(event) => setDraft({ ...draft, sequenceNo: Number(event.target.value) })}
+              placeholder="ลำดับ"
+            />
+            <input
+              disabled={isReadOnly}
+              value={draft.applicantNo}
+              onChange={(event) => setDraft({ ...draft, applicantNo: event.target.value })}
+              placeholder="เลขประจำตัวสอบ"
+            />
+            <input
+              disabled={isReadOnly}
+              value={draft.fullName}
+              onChange={(event) => setDraft({ ...draft, fullName: event.target.value })}
+              placeholder="คำนำหน้า ชื่อ นามสกุล"
+            />
+            <input
+              disabled={isReadOnly}
+              value={draft.note}
+              onChange={(event) => setDraft({ ...draft, note: event.target.value })}
+              placeholder="หมายเหตุ"
+            />
+            <button
+              type="button"
+              disabled={isReadOnly || saving || !draft.sequenceNo || !draft.applicantNo.trim() || !draft.fullName.trim()}
+              onClick={saveCandidate}
+            >
+              <CheckCircle2 size={16} />
+              {saving ? "กำลังบันทึก..." : "บันทึกผู้สอบ"}
+            </button>
+            <button type="button" className="ghost" onClick={() => setEditOpen(false)} disabled={saving}>
+              ยกเลิก
+            </button>
+          </div>
+        ) : null}
       </div>
       <div className="identity-list compact">
         <span>ผู้ส่งรับรอง</span>
@@ -1289,12 +2571,17 @@ function AdminSettingsPanel({
     if (settings) {
       setDraft({
         examTitle: settings.examTitle,
+        organization: settings.organization,
+        position: settings.position,
         location: settings.location,
         reportTime: settings.reportTime,
+        durationSeconds: String(settings.durationSeconds),
         taskDescription: settings.taskDescription,
         instructions: settings.instructions,
         announcement: settings.announcement,
-        publicUrl: settings.publicUrlCustom
+        publicUrl: settings.publicUrlCustom,
+        wifiSsid: settings.wifiSsid,
+        wifiPassword: settings.wifiPassword
       });
     }
   }, [settings]);
@@ -1318,8 +2605,10 @@ function AdminSettingsPanel({
     }
   }
 
+  const effectivePublicUrl = (draft.publicUrl || settings?.publicUrl || "").trim();
+
   return (
-    <section className="panel settings-panel">
+    <section className="panel settings-panel" id="settings">
       <div className="panel-heading">
         <div>
           <h2>รายละเอียดสอบและ QR Wi‑Fi</h2>
@@ -1336,9 +2625,40 @@ function AdminSettingsPanel({
         />
         <input
           disabled={isReadOnly}
+          value={draft.organization || ""}
+          onChange={(event) => setDraft({ ...draft, organization: event.target.value })}
+          placeholder="หน่วยงาน"
+        />
+        <input
+          disabled={isReadOnly}
+          value={draft.position || ""}
+          onChange={(event) => setDraft({ ...draft, position: event.target.value })}
+          placeholder="ตำแหน่ง"
+        />
+        <input
+          disabled={isReadOnly}
           value={draft.location || ""}
           onChange={(event) => setDraft({ ...draft, location: event.target.value })}
           placeholder="สถานที่"
+        />
+        <input
+          disabled={isReadOnly}
+          value={draft.durationSeconds || ""}
+          onChange={(event) => setDraft({ ...draft, durationSeconds: event.target.value })}
+          placeholder="เวลาสอบเป็นวินาที เช่น 3600"
+          inputMode="numeric"
+        />
+        <input
+          disabled={isReadOnly}
+          value={draft.wifiSsid || ""}
+          onChange={(event) => setDraft({ ...draft, wifiSsid: event.target.value })}
+          placeholder="ชื่อ Wi-Fi เช่น @Communication"
+        />
+        <input
+          disabled={isReadOnly}
+          value={draft.wifiPassword || ""}
+          onChange={(event) => setDraft({ ...draft, wifiPassword: event.target.value })}
+          placeholder="รหัส Wi-Fi สำหรับพิมพ์บนบัตรโต๊ะ"
         />
         <div>
           <input
@@ -1348,7 +2668,7 @@ function AdminSettingsPanel({
             placeholder="ปล่อยว่างเพื่อตรวจจับ IP อัตโนมัติ"
           />
           <p className="muted-text" style={{ fontSize: 12, marginTop: 6 }}>
-            ตรวจพบอัตโนมัติ: <strong>{settings?.publicUrl}</strong>
+            URL ที่ใช้ Gen QR: <strong>{effectivePublicUrl || "-"}</strong>
             {draft.publicUrl ? " (กำลังใช้ค่าที่กำหนดเอง)" : " (กำลังใช้งานอยู่)"}
           </p>
         </div>
@@ -1385,10 +2705,18 @@ function AdminSettingsPanel({
           type="password"
         />
       </div>
+      <div className="settings-qr-preview">
+        <div>
+          <QrCode size={18} />
+          <strong>QR เพจส่งงานจะ Gen ใหม่อัตโนมัติหลังบันทึก URL</strong>
+          <span>{effectivePublicUrl || "ยังไม่มี URL สำหรับสร้าง QR"}</span>
+        </div>
+        {effectivePublicUrl ? <img src={qrImageSrc(effectivePublicUrl, 180)} alt="QR เพจส่งงานตัวอย่าง" /> : null}
+      </div>
       <div className="toolbar-actions">
         <button disabled={isReadOnly} onClick={save}>
           <CheckCircle2 size={16} />
-          บันทึกข้อความ
+          บันทึกและ Gen QR code ใหม่
         </button>
         <label className={`upload-label ${isReadOnly ? "disabled" : ""}`}>
           <Wifi size={16} />

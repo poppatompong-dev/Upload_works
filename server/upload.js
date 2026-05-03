@@ -29,7 +29,7 @@ export function createUploadSession(candidateId, files) {
   const current = db.prepare("SELECT * FROM submissions WHERE candidate_id = ?").get(candidateId);
   if (current?.candidate_confirmed_at) throw new Error("ยืนยันการส่งงานแล้ว ไม่สามารถส่งซ้ำได้");
   if (current?.active_upload_id) {
-    fs.promises.rm(path.join(paths.tempDir, current.active_upload_id), { recursive: true, force: true }).catch(() => {});
+    cleanupUploadTempSync(current.active_upload_id);
   }
   if (!Array.isArray(files) || files.length === 0) throw new Error("กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์");
   if (!files.some((file) => file.category === "video")) {
@@ -179,7 +179,8 @@ async function assembleFile(fileId) {
     new Date().toISOString(),
     fileId
   );
-  fs.promises.rm(chunkDir, { recursive: true, force: true }).catch(() => {});
+  await fs.promises.rm(chunkDir, { recursive: true, force: true });
+  await cleanupEmptyUploadTemp(file.upload_id);
   logAudit(`candidate:${candidate.applicant_no}`, "file_uploaded", {
     candidateId: file.candidate_id,
     uploadId: file.upload_id,
@@ -188,6 +189,25 @@ async function assembleFile(fileId) {
     size: stat.size,
     path: outputPath
   });
+}
+
+function cleanupUploadTempSync(uploadId) {
+  const uploadDir = path.join(paths.tempDir, uploadId);
+  assertInside(paths.tempDir, uploadDir);
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+}
+
+async function cleanupEmptyUploadTemp(uploadId) {
+  const uploadDir = path.join(paths.tempDir, uploadId);
+  assertInside(paths.tempDir, uploadDir);
+  try {
+    const remaining = await fs.promises.readdir(uploadDir);
+    if (remaining.length === 0) {
+      await fs.promises.rm(uploadDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 async function maybeVerifyUpload(candidateId, uploadId) {
@@ -214,7 +234,7 @@ async function verifySubmission(candidateId, uploadId) {
   let hasVideo = false;
   for (const file of files) {
     const detected = await detectFile(file.original_path);
-    const actualCategory = classifyAllowed(detected.mime);
+    const actualCategory = classifyAllowed(detected.mime, file.original_name);
     if (actualCategory === "unsupported") {
       throw new Error(`ไฟล์ ${file.original_name} ไม่ใช่วิดีโอ รูปภาพ หรือ PDF ที่ระบบรองรับ`);
     }
@@ -240,8 +260,16 @@ async function verifySubmission(candidateId, uploadId) {
       const previewDir = path.join(path.dirname(path.dirname(file.original_path)), "preview");
       previewPath = path.join(previewDir, `${file.id}.mp4`);
       thumbnailPath = path.join(previewDir, `${file.id}.jpg`);
-      await transcodePreview(file.original_path, previewPath);
-      await createVideoThumbnail(previewPath, thumbnailPath);
+      try {
+        await transcodePreview(file.original_path, previewPath);
+        await createVideoThumbnail(previewPath, thumbnailPath);
+      } catch (error) {
+        previewPath = file.original_path;
+        thumbnailPath = null;
+        warning = [warning, `รับไฟล์วิดีโอแล้ว แต่สร้าง preview MP4 ไม่สำเร็จ: ${error.message}`]
+          .filter(Boolean)
+          .join(" | ");
+      }
     }
     db.prepare(
       `UPDATE files
