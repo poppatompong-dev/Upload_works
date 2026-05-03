@@ -887,6 +887,25 @@ function AdminPage() {
             <>
               <StatCards stats={state?.stats} />
               <AdminActionQueue rows={state?.candidates || []} onSelect={selectCandidate} />
+              {detail ? (
+                <section className="panel overview-inspector-panel">
+                  <AdminInspector
+                    token={token}
+                    detail={detail}
+                    preview={preview}
+                    isReadOnly={isReadOnly}
+                    onPreview={openPreview}
+                    onUnlock={(reason) =>
+                      detail
+                        ? runAction(() => api.unlockCandidate(token, detail.id, reason), "เปิดสิทธิ์ส่งใหม่แล้ว")
+                        : Promise.resolve()
+                    }
+                    onAdminConfirm={adminConfirm}
+                    onSaveCandidate={updateCandidate}
+                    onBack={clearSelectedCandidate}
+                  />
+                </section>
+              ) : null}
             </>
           ) : null}
 
@@ -2304,6 +2323,7 @@ function AdminActionQueue({
   rows: CandidateSummary[];
   onSelect: (row: CandidateSummary) => void;
 }) {
+  const [activeGroupKey, setActiveGroupKey] = useState("admin");
   const groups = [
     {
       key: "submitted",
@@ -2342,6 +2362,7 @@ function AdminActionQueue({
     rows: [...group.rows].sort((a, b) => a.sequenceNo - b.sequenceNo)
   }));
   const readyNow = groups.find((group) => group.key === "admin")?.rows.length || 0;
+  const activeGroup = groups.find((group) => group.key === activeGroupKey) || groups[2];
   return (
     <section className={`panel action-queue ${readyNow ? "has-ready" : ""}`}>
       <div className="panel-heading compact-heading">
@@ -2360,11 +2381,10 @@ function AdminActionQueue({
           const first = group.rows[0];
           return (
             <button
-              className={`action-summary-card ${group.tone}`}
+              className={`action-summary-card ${group.tone} ${activeGroupKey === group.key ? "active" : ""}`}
               key={group.key}
-              disabled={!first}
-              onClick={() => first && onSelect(first)}
-              title={first ? `เปิด ${first.sequenceNo}. ${first.fullName || first.applicantNo}` : "ยังไม่มีรายการในกลุ่มนี้"}
+              onClick={() => setActiveGroupKey(group.key)}
+              title={first ? `เปิดรายการ ${group.title}` : "ยังไม่มีรายการในกลุ่มนี้"}
             >
               <span className="action-summary-icon"><Icon size={22} /></span>
               <span className="action-summary-copy">
@@ -2372,7 +2392,7 @@ function AdminActionQueue({
                 <small>{group.detail}</small>
               </span>
               <b>{group.rows.length}</b>
-              <em>{first ? "เปิดรายถัดไป" : "ไม่มีรายการ"}</em>
+              <em>{first ? "เปิดรายการ" : "ไม่มีรายการ"}</em>
               <span className="action-summary-mini">
                 {group.rows.slice(0, 3).map((row) => (
                   <i key={row.id}>{String(row.sequenceNo).padStart(2, "0")}</i>
@@ -2381,6 +2401,35 @@ function AdminActionQueue({
             </button>
           );
         })}
+      </div>
+      <div className="action-drilldown">
+        <div className="action-drilldown-head">
+          <div>
+            <h3>{activeGroup.title}</h3>
+            <p>{activeGroup.detail}</p>
+          </div>
+          <strong>{activeGroup.rows.length}</strong>
+        </div>
+        {activeGroup.rows.length ? (
+          <div className="action-drilldown-list">
+            {activeGroup.rows.map((row) => (
+              <button className={`action-drilldown-row ${statusTone(row.status)}`} key={row.id} onClick={() => onSelect(row)}>
+                <strong>{String(row.sequenceNo).padStart(2, "0")}</strong>
+                <span>
+                  {row.applicantNo}
+                  <small>{row.fullName || "-"}</small>
+                </span>
+                <em>{row.status === "uploading" ? `${Math.round(row.progress || 0)}%` : statusLabel(row.status)}</em>
+                <Eye size={16} />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="action-queue-empty">
+            <CheckCircle2 size={18} />
+            ยังไม่มีรายการในกลุ่มนี้
+          </div>
+        )}
       </div>
     </section>
   );
