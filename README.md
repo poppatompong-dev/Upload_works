@@ -1,6 +1,6 @@
 # ระบบส่งผลงานสอบปฏิบัติผู้ช่วยนักประชาสัมพันธ์
 
-ระบบนี้รันบนเครื่องจริงภายใน LAN เท่านั้น ใช้สำหรับรับผลงานจากผู้เข้าสอบ 46 คน เก็บไฟล์หลักที่ `D:\ExamSubmissions\PR-2569` และสำรองที่ `C:\ExamSubmissionsBackup\PR-2569`
+ระบบนี้รันบนเครื่องจริงภายใน LAN เท่านั้น ใช้สำหรับรับผลงานจากผู้เข้าสอบ 46 คน เก็บไฟล์หลักที่ `D:\ExamSubmissions\PR-2569` สำรองที่ `C:\ExamSubmissionsBackup\PR-2569` และรวมวิดีโอผู้สอบไว้ที่ `E:\ExamVideos\PR-2569`
 
 ## URL หลัก
 
@@ -32,11 +32,12 @@
 - ทดสอบมือถือ/โน้ตบุ๊กจริงอย่างน้อย 10-15 เครื่องบน Wi-Fi เทศบาล
 - ทดสอบส่งวิดีโอจริง 1 นาที เปิด preview และกดยืนยัน
 - ตรวจว่า projector ไม่แสดงชื่อเต็ม
-- ตรวจว่าไฟล์ไปอยู่ทั้ง `D:\ExamSubmissions\PR-2569` และ `C:\ExamSubmissionsBackup\PR-2569`
+- ตรวจว่าไฟล์ไปอยู่ทั้ง `D:\ExamSubmissions\PR-2569`, `C:\ExamSubmissionsBackup\PR-2569` และวิดีโอถูกแยกไว้ที่ `E:\ExamVideos\PR-2569\original` กับ `E:\ExamVideos\PR-2569\mp4`
 
 ## หลังสอบ
 
 - กด Export ในหน้า admin หรือรัน `ops\export-now.ps1`
+- ถ้าต้องการรวมวิดีโอที่มีอยู่แล้วอีกครั้ง ให้รัน `npm run archive:videos`
 - เก็บโฟลเดอร์ `D:\ExamSubmissions\PR-2569\exports` และสำเนาใน `C:\ExamSubmissionsBackup\PR-2569\exports`
 - สุ่มเปิดไฟล์ original และ preview MP4 จากหลายลำดับ แล้วเทียบรหัสยืนยัน/sha256 ใน manifest
 

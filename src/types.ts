@@ -99,9 +99,11 @@ export interface PublicState {
   system: {
     dataFreeBytes: number | null;
     backupFreeBytes: number | null;
+    videoArchiveFreeBytes: number | null;
     warnings: string[];
     dataRoot: string;
     backupRoot: string;
+    videoArchiveRoot: string;
     uploadWorksRoot: string;
   };
 }

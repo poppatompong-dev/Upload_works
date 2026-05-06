@@ -7,6 +7,8 @@ import { logAudit, openDatabase } from "./db.js";
 const resettableDirs = [
   ["submissions", paths.submissionsDir],
   ["temp", paths.tempDir],
+  ["videoOriginals", paths.videoOriginalsDir],
+  ["videoMp4", paths.videoMp4Dir],
   ["backupSubmissions", paths.backupSubmissionsDir]
 ];
 

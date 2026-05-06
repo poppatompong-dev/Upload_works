@@ -12,6 +12,7 @@
     "test": "node --test tests/*.test.js",
     "seed:roster": "node scripts/seed-roster.js",
     "clear:test-data": "node scripts/clear-test-data.js",
+    "archive:videos": "node scripts/archive-videos.js",
     "export:manifest": "node scripts/export-manifest.js",
     "service:install": "node scripts/install-service.js",
     "service:uninstall": "node scripts/uninstall-service.js",

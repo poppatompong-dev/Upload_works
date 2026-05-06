@@ -65,6 +65,70 @@ export async function backupCandidate(candidateId) {
   ).run(new Date().toISOString(), candidateId);
 }
 
+export async function archiveCandidateVideos(candidateId) {
+  const db = openDatabase();
+  const candidate = db.prepare("SELECT * FROM candidates WHERE id = ?").get(candidateId);
+  if (!candidate) throw new Error("Candidate not found");
+  const folderName = candidateFolderName(candidate);
+  const files = db
+    .prepare(
+      `SELECT * FROM files
+       WHERE candidate_id = ?
+         AND category = 'video'
+         AND original_path IS NOT NULL
+       ORDER BY file_index`
+    )
+    .all(candidateId);
+
+  const archived = [];
+  for (const file of files) {
+    const originalName = path.basename(file.original_path);
+    const originalTarget = path.join(paths.videoOriginalsDir, folderName, originalName);
+    await copyFileSafe(file.original_path, originalTarget);
+
+    let mp4Target = null;
+    const previewPath = file.preview_path || "";
+    if (previewPath && path.extname(previewPath).toLowerCase() === ".mp4") {
+      const mp4Name = `${path.basename(originalName, path.extname(originalName))}.mp4`;
+      mp4Target = path.join(paths.videoMp4Dir, folderName, mp4Name);
+      await copyFileSafe(previewPath, mp4Target);
+    }
+
+    archived.push({
+      fileId: file.id,
+      original: originalTarget,
+      mp4: mp4Target
+    });
+  }
+  return { folderName, archived };
+}
+
+export async function archiveAllCandidateVideos() {
+  const db = openDatabase();
+  const candidates = db
+    .prepare(
+      `SELECT DISTINCT c.id
+       FROM candidates c
+       JOIN files f ON f.candidate_id = c.id
+       WHERE f.category = 'video'
+         AND f.original_path IS NOT NULL
+       ORDER BY c.sequence_no`
+    )
+    .all();
+  const results = [];
+  for (const candidate of candidates) {
+    results.push(await archiveCandidateVideos(candidate.id));
+  }
+  return {
+    videoArchiveRoot: config.videoArchiveRoot,
+    originalDir: paths.videoOriginalsDir,
+    mp4Dir: paths.videoMp4Dir,
+    candidates: results.length,
+    files: results.reduce((sum, result) => sum + result.archived.length, 0),
+    results
+  };
+}
+
 export async function exportGlobalManifest() {
   const db = openDatabase();
   await ensureDir(paths.exportsDir);
@@ -89,7 +153,11 @@ export async function exportGlobalManifest() {
     .all();
   const payload = {
     generatedAt: new Date().toISOString(),
-    storage: { dataRoot: config.dataRoot, backupRoot: config.backupRoot },
+    storage: {
+      dataRoot: config.dataRoot,
+      backupRoot: config.backupRoot,
+      videoArchiveRoot: config.videoArchiveRoot
+    },
     candidates,
     files
   };

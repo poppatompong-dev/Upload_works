@@ -18,6 +18,8 @@ async function bootstrap() {
     ensureDir(paths.tempDir),
     ensureDir(paths.exportsDir),
     ensureDir(paths.logsDir),
+    ensureDir(paths.videoOriginalsDir),
+    ensureDir(paths.videoMp4Dir),
     ensureDir(paths.backupSubmissionsDir),
     ensureDir(paths.backupExportsDir),
     ensureDir(paths.uploadWorksRosterDir),
@@ -31,7 +33,8 @@ async function bootstrap() {
     port: config.port,
     host: config.host,
     dataRoot: config.dataRoot,
-    backupRoot: config.backupRoot
+    backupRoot: config.backupRoot,
+    videoArchiveRoot: config.videoArchiveRoot
   });
 }
 

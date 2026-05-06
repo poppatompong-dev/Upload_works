@@ -9,6 +9,7 @@ fs.mkdirSync(rootBase, { recursive: true });
 const root = fs.mkdtempSync(path.join(rootBase, "nsm-upload-test-"));
 process.env.EXAM_DATA_ROOT = path.join(root, "data");
 process.env.EXAM_BACKUP_ROOT = path.join(root, "backup");
+process.env.EXAM_VIDEO_ARCHIVE_ROOT = path.join(root, "video_archive");
 process.env.UPLOAD_WORKS_DIR = path.join(root, "upload_works");
 process.env.PUBLIC_URL = "http://127.0.0.1:18080";
 
@@ -105,6 +106,8 @@ test("chunk upload verifies, transcodes, confirms, and backs up a video", async 
   assert.equal(file.status, "verified");
   assert.ok(file.sha256);
   assert.ok(fs.existsSync(file.preview_path));
+  assert.equal(fs.readdirSync(paths.videoOriginalsDir).length, 1);
+  assert.equal(fs.readdirSync(paths.videoMp4Dir).length, 1);
   assert.equal(file.video_width, 320);
   assert.equal(file.video_height, 180);
   assert.equal(file.aspect_ratio, 320 / 180);

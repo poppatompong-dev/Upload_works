@@ -60,7 +60,7 @@ export async function registerRoutes(app) {
     ok: true,
     service: "nsm-practical-submission",
     time: new Date().toISOString(),
-    storage: { dataRoot: config.dataRoot, backupRoot: config.backupRoot }
+    storage: { dataRoot: config.dataRoot, backupRoot: config.backupRoot, videoArchiveRoot: config.videoArchiveRoot }
   }));
 
   app.get("/api/public/state", async () => publicState());

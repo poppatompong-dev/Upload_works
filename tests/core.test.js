@@ -9,6 +9,7 @@ fs.mkdirSync(rootBase, { recursive: true });
 const root = fs.mkdtempSync(path.join(rootBase, "nsm-exam-test-"));
 process.env.EXAM_DATA_ROOT = path.join(root, "data");
 process.env.EXAM_BACKUP_ROOT = path.join(root, "backup");
+process.env.EXAM_VIDEO_ARCHIVE_ROOT = path.join(root, "video_archive");
 process.env.UPLOAD_WORKS_DIR = path.join(root, "upload_works");
 process.env.PUBLIC_URL = "http://127.0.0.1:8080";
 
@@ -168,12 +169,18 @@ test("reset utility clears upload data and folders while preserving roster and s
   ).run(now, now);
   const tempFile = path.join(paths.tempDir, "upload-reset", "file-reset", "000000.part");
   const submissionFile = path.join(paths.submissionsDir, "reset.txt");
+  const videoOriginalFile = path.join(paths.videoOriginalsDir, "reset.mp4");
+  const videoMp4File = path.join(paths.videoMp4Dir, "reset.mp4");
   const exportFile = path.join(paths.exportsDir, "manifest.csv");
   fs.mkdirSync(path.dirname(tempFile), { recursive: true });
   fs.mkdirSync(paths.submissionsDir, { recursive: true });
+  fs.mkdirSync(paths.videoOriginalsDir, { recursive: true });
+  fs.mkdirSync(paths.videoMp4Dir, { recursive: true });
   fs.mkdirSync(paths.exportsDir, { recursive: true });
   fs.writeFileSync(tempFile, "chunk");
   fs.writeFileSync(submissionFile, "submission");
+  fs.writeFileSync(videoOriginalFile, "original");
+  fs.writeFileSync(videoMp4File, "mp4");
   fs.writeFileSync(exportFile, "export");
   db.prepare("UPDATE timer SET state='running', start_at=?, deadline_at=?, updated_at=? WHERE id=1").run(now, now, now);
   logAudit("test", "preserve_audit_log", { keep: true });
@@ -187,6 +194,8 @@ test("reset utility clears upload data and folders while preserving roster and s
   assert.equal(submission.progress, 0);
   assert.equal(fs.readdirSync(paths.tempDir).length, 0);
   assert.equal(fs.readdirSync(paths.submissionsDir).length, 0);
+  assert.equal(fs.readdirSync(paths.videoOriginalsDir).length, 0);
+  assert.equal(fs.readdirSync(paths.videoMp4Dir).length, 0);
   assert.equal(fs.existsSync(exportFile), true);
   assert.equal(getSetting("position").length > 0, true);
   assert.equal(db.prepare("SELECT state FROM timer WHERE id=1").get().state, "running");

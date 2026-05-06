@@ -122,12 +122,16 @@ export function statsFor(rows) {
 export function systemWarnings() {
   const dataFree = getFreeBytes(config.dataRoot);
   const backupFree = getFreeBytes(config.backupRoot);
+  const videoArchiveFree = getFreeBytes(config.videoArchiveRoot);
   const warnings = [];
   if (dataFree !== null && dataFree < uploadPolicy.lowDiskWarningBytes) {
     warnings.push("พื้นที่ D: สำหรับเก็บไฟล์หลักเหลือน้อยกว่า 20 GB");
   }
   if (backupFree !== null && backupFree < uploadPolicy.lowDiskWarningBytes) {
     warnings.push("พื้นที่ C: สำหรับสำรองเหลือน้อยกว่า 20 GB");
+  }
+  if (videoArchiveFree !== null && videoArchiveFree < uploadPolicy.lowDiskWarningBytes) {
+    warnings.push("พื้นที่ E: สำหรับรวมไฟล์วิดีโอเหลือน้อยกว่า 20 GB");
   }
   const adminHash = getSetting("adminPasswordHash", "");
   const readonlyHash = getSetting("readOnlyPasswordHash", "");
@@ -140,9 +144,11 @@ export function systemWarnings() {
   return {
     dataFreeBytes: dataFree,
     backupFreeBytes: backupFree,
+    videoArchiveFreeBytes: videoArchiveFree,
     warnings,
     dataRoot: config.dataRoot,
     backupRoot: config.backupRoot,
+    videoArchiveRoot: config.videoArchiveRoot,
     uploadWorksRoot: config.uploadWorksRoot
   };
 }
@@ -227,21 +233,32 @@ export async function healthPayload() {
     await fs.promises.unlink(probe);
     backupWritable = true;
   } catch {}
+  let videoArchiveWritable = false;
+  try {
+    await fs.promises.mkdir(config.videoArchiveRoot, { recursive: true });
+    const probe = path.join(config.videoArchiveRoot, ".write-probe");
+    await fs.promises.writeFile(probe, "ok");
+    await fs.promises.unlink(probe);
+    videoArchiveWritable = true;
+  } catch {}
   const ffmpegAvailable = typeof ffmpegBinPath === "string" && fs.existsSync(ffmpegBinPath);
   const ffprobeAvailable = typeof ffprobeStatic?.path === "string" && fs.existsSync(ffprobeStatic.path);
   const disk = systemWarnings();
   return {
-    ok: dbWritable && backupWritable && ffmpegAvailable && ffprobeAvailable && rosterCount > 0,
+    ok: dbWritable && backupWritable && videoArchiveWritable && ffmpegAvailable && ffprobeAvailable && rosterCount > 0,
     rosterCount,
     dbWritable,
     backupWritable,
+    videoArchiveWritable,
     ffmpegAvailable,
     ffprobeAvailable,
     disk: {
       dataFreeBytes: disk.dataFreeBytes,
       backupFreeBytes: disk.backupFreeBytes,
+      videoArchiveFreeBytes: disk.videoArchiveFreeBytes,
       dataRoot: config.dataRoot,
-      backupRoot: config.backupRoot
+      backupRoot: config.backupRoot,
+      videoArchiveRoot: config.videoArchiveRoot
     },
     warnings: disk.warnings
   };

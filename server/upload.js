@@ -11,7 +11,7 @@ import {
   probeVideo,
   transcodePreview
 } from "./media.js";
-import { backupCandidate, candidateFolderName, writeCandidateManifest } from "./exporter.js";
+import { archiveCandidateVideos, backupCandidate, candidateFolderName, writeCandidateManifest } from "./exporter.js";
 import { broadcast } from "./realtime.js";
 
 export function isTimerOpen() {
@@ -298,6 +298,16 @@ async function verifySubmission(candidateId, uploadId) {
      WHERE candidate_id=?`
   ).run(now, now, candidateId);
   await writeCandidateManifest(candidateId);
+  try {
+    await archiveCandidateVideos(candidateId);
+  } catch (error) {
+    logAudit(
+      `candidate:${candidateId}`,
+      "video_archive_failed",
+      { candidateId, uploadId, error: error.message },
+      { level: "warning" }
+    );
+  }
   try {
     await backupCandidate(candidateId);
   } catch (error) {

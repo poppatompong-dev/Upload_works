@@ -10,6 +10,7 @@ export const config = {
   host: process.env.HOST || "0.0.0.0",
   dataRoot: process.env.EXAM_DATA_ROOT || "D:\\ExamSubmissions\\PR-2569",
   backupRoot: process.env.EXAM_BACKUP_ROOT || "C:\\ExamSubmissionsBackup\\PR-2569",
+  videoArchiveRoot: process.env.EXAM_VIDEO_ARCHIVE_ROOT || "E:\\ExamVideos\\PR-2569",
   uploadWorksRoot:
     process.env.UPLOAD_WORKS_DIR || path.join(os.homedir(), "Documents", "Upload_Works"),
   adminPassword: process.env.EXAM_ADMIN_PASSWORD || "admin2569",
@@ -35,6 +36,8 @@ export const paths = {
   tempDir: path.join(config.dataRoot, "_tmp"),
   exportsDir: path.join(config.dataRoot, "exports"),
   logsDir: path.join(config.dataRoot, "logs"),
+  videoOriginalsDir: path.join(config.videoArchiveRoot, "original"),
+  videoMp4Dir: path.join(config.videoArchiveRoot, "mp4"),
   backupSubmissionsDir: path.join(config.backupRoot, "submissions"),
   backupExportsDir: path.join(config.backupRoot, "exports"),
   uploadWorksRosterDir: path.join(config.uploadWorksRoot, "roster"),
